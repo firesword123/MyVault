@@ -41,7 +41,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJBOTI3RDREQjI2NTI3MjYKUldRbUoyV3lUWDJTS2s0U1NYZlBNaHhZMy95WVl5WnlNZUlydXJJc3ZIMmxpcWtqWndKbkppdDEK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMwOTVBNjQyNEIwMDlERApSV1RkQ2JBa1pGb0pBeVp1MUZyYXcvaTJ6K3ZyYUhXUFBMTWhsNmFYejJkQWpKNERpR05JUHdHawo=",
       "endpoints": [
         "https://github.com/firesword123/MyVault/releases/latest/download/latest.json"
       ],
