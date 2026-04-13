@@ -8,12 +8,15 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:build:update": "powershell -ExecutionPolicy Bypass -File scripts/build-updater-release.ps1",
     "test:backend": "cargo test --manifest-path src-tauri/Cargo.toml",
     "check:smoke": "powershell -ExecutionPolicy Bypass -File scripts/acceptance-smoke.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-updater": "^2.10.1",
     "lucide-react": "^1.7.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"

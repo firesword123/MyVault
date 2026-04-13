@@ -4,6 +4,10 @@ import type { LocaleMessages } from "../i18n";
 type SettingsPanelProps = {
   open: boolean;
   messages: LocaleMessages;
+  version: string;
+  updateStatus: string;
+  updateActionLabel: string;
+  updateActionDisabled: boolean;
   language: string;
   showNoteTime: boolean;
   closeBehavior: "quit" | "tray";
@@ -15,12 +19,17 @@ type SettingsPanelProps = {
   onCloseBehaviorChange: (behavior: "quit" | "tray") => void;
   onColorPresetsChange: (colors: string[]) => void;
   onColorPresetCountChange: (count: number) => void;
+  onUpdateAction: () => void;
   onClose: () => void;
 };
 
 export function SettingsPanel({
   open,
   messages,
+  version,
+  updateStatus,
+  updateActionLabel,
+  updateActionDisabled,
   language,
   showNoteTime,
   closeBehavior,
@@ -32,6 +41,7 @@ export function SettingsPanel({
   onCloseBehaviorChange,
   onColorPresetsChange,
   onColorPresetCountChange,
+  onUpdateAction,
   onClose,
 }: SettingsPanelProps) {
   if (!open) return null;
@@ -60,6 +70,24 @@ export function SettingsPanel({
           <option value="en-US">{messages.languageEnUs}</option>
         </select>
       </label>
+
+      <div className="settings-field">
+        <span>{messages.versionLabel}</span>
+        <div className="settings-static-value">{version}</div>
+      </div>
+
+      <div className="settings-field">
+        <span>{messages.updateLabel}</span>
+        <div className="settings-static-value">{updateStatus}</div>
+        <button
+          type="button"
+          className="soft-button"
+          disabled={updateActionDisabled}
+          onClick={onUpdateAction}
+        >
+          {updateActionLabel}
+        </button>
+      </div>
 
       <div className="settings-field">
         <span>{messages.vaultLabel}</span>

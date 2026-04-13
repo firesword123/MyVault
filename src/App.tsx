@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   KeyboardEvent,
   startTransition,
@@ -68,6 +71,10 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(290);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
+  const [appVersion, setAppVersion] = useState("Resolving...");
+  const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [updateBusy, setUpdateBusy] = useState(false);
 
   const activeNoteRef = useRef<NoteDetail | null>(null);
   const isResizingSidebar = useRef(false);
@@ -201,6 +208,10 @@ function App() {
   }, [activeNote]);
 
   useEffect(() => {
+    setUpdateStatus((current) => current || messages.updateIdleLabel);
+  }, [messages]);
+
+  useEffect(() => {
     setOpenFolders((current) => {
       const next = { ...current };
       for (const folder of folders) {
@@ -254,10 +265,12 @@ function App() {
 
   async function bootstrap() {
     try {
+      const version = await getVersion();
       const [notesPayload, galleryPayload] = await Promise.all([
         invoke<BootstrapPayload>("bootstrap_app"),
         invoke<GalleryBootstrapPayload>("bootstrap_gallery"),
       ]);
+      setAppVersion(`v${version}`);
       setSettings(notesPayload.settings);
       setVaultPath(notesPayload.vaultPath);
       setNotes(notesPayload.notes);
@@ -564,6 +577,51 @@ function App() {
   async function updateSettings(nextSettings: AppSettings) {
     const savedSettings = await invoke<AppSettings>("update_settings", { settings: nextSettings });
     setSettings(savedSettings);
+  }
+
+  async function handleUpdateAction() {
+    if (updateBusy) return;
+
+    if (availableUpdate) {
+      setUpdateBusy(true);
+      setUpdateStatus(messages.updateInstallingLabel.replace("{version}", `v${availableUpdate.version}`));
+      try {
+        await availableUpdate.downloadAndInstall((event) => {
+          if (event.event === "Started") {
+            setUpdateStatus(messages.updateDownloadingLabel);
+          } else if (event.event === "Progress") {
+            setUpdateStatus(messages.updateDownloadingLabel);
+          } else if (event.event === "Finished") {
+            setUpdateStatus(messages.updateRestartingLabel);
+          }
+        });
+        await relaunch();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setUpdateStatus(`${messages.updateFailedLabel}: ${message}`);
+      } finally {
+        setUpdateBusy(false);
+      }
+      return;
+    }
+
+    setUpdateBusy(true);
+    setUpdateStatus(messages.updateCheckingLabel);
+    try {
+      const update = await check();
+      if (update) {
+        setAvailableUpdate(update);
+        setUpdateStatus(messages.updateAvailableLabel.replace("{version}", `v${update.version}`));
+      } else {
+        setAvailableUpdate(null);
+        setUpdateStatus(messages.updateUpToDateLabel);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setUpdateStatus(`${messages.updateFailedLabel}: ${message}`);
+    } finally {
+      setUpdateBusy(false);
+    }
   }
 
   function updateActiveNote(patch: Partial<Pick<NoteDetail, "title" | "content">>) {
@@ -1061,6 +1119,12 @@ function App() {
           <SettingsPanel
             open={settingsOpen}
             messages={messages}
+            version={appVersion}
+            updateStatus={updateStatus}
+            updateActionLabel={
+              availableUpdate ? messages.updateInstallButton : messages.updateCheckButton
+            }
+            updateActionDisabled={updateBusy}
             language={settings.language}
             showNoteTime={settings.showNoteTime}
             closeBehavior={settings.closeBehavior}
@@ -1074,6 +1138,7 @@ function App() {
             onColorPresetCountChange={(colorPresetCount) =>
               void updateSettings({ ...settings, colorPresetCount })
             }
+            onUpdateAction={() => void handleUpdateAction()}
             onClose={() => setSettingsOpen(false)}
           />
         }

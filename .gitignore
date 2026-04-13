@@ -13,6 +13,8 @@ dist-ssr
 *.local
 .cargo-target
 src-tauri/target
+updater.key
+updater.password
 
 # Editor directories and files
 .vscode/*

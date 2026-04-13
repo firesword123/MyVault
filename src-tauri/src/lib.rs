@@ -1151,6 +1151,8 @@ fn start_window_dragging(window: Window) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().pubkey(include_str!("../../updater.key.pub").trim()).build())
         .setup(|app| {
             setup_tray(app.handle()).map_err(Into::into)
         })
