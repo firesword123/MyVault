@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "myvault",
+  "version": "0.1.0",
+  "identifier": "com.facial.myvault",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "myvault",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 980,
+        "minHeight": 680,
+        "decorations": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: blob:;",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
