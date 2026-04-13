@@ -54,7 +54,9 @@ try {
     }
   }
 
-  $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $latestJsonPath -Encoding UTF8
+  $manifestJson = $manifest | ConvertTo-Json -Depth 5
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($latestJsonPath, $manifestJson, $utf8NoBom)
   Write-Host "Prepared updater manifest at $latestJsonPath"
 }
 finally {
