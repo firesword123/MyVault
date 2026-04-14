@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use super::{ensure_vault_layout, images_dir, now_ts, write_utf8_file};
 
@@ -82,12 +82,27 @@ pub(crate) struct DeleteImageFolderInput {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ImportGalleryFileInput {
-    file_name: String,
+pub(crate) struct ImportGalleryPathsInput {
+    source_paths: Vec<String>,
     #[serde(default)]
     folder_path: String,
-    relative_parent_path: Option<String>,
-    bytes: Vec<u8>,
+    #[serde(default)]
+    preserve_folders: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportGalleryProgressPayload {
+    total: usize,
+    completed: usize,
+    file_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportGalleryResult {
+    imported_count: usize,
+    last_imported_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -196,6 +211,67 @@ fn compose_gallery_folder_path(folder_path: &str, relative_parent_path: Option<&
         (true, false) => Ok(extra),
         (false, false) => Ok(format!("{base}/{extra}")),
     }
+}
+
+fn collect_import_items_from_source(
+    source: &Path,
+    preserve_folders: bool,
+    relative_prefix: &Path,
+    output: &mut Vec<(PathBuf, Option<String>)>,
+) -> Result<(), String> {
+    if source.is_file() {
+        if is_supported_image_path(source) {
+            let relative_parent = if preserve_folders {
+                source
+                    .parent()
+                    .and_then(|parent| parent.strip_prefix(relative_prefix).ok())
+                    .map(|path| path.to_string_lossy().replace('\\', "/"))
+                    .filter(|value| !value.is_empty())
+            } else {
+                None
+            };
+            output.push((source.to_path_buf(), relative_parent));
+        }
+        return Ok(());
+    }
+
+    if source.is_dir() {
+        for entry in fs::read_dir(source).map_err(|error| format!("failed to read import directory: {error}"))? {
+            let entry = entry.map_err(|error| format!("failed to read import directory entry: {error}"))?;
+            collect_import_items_from_source(&entry.path(), preserve_folders, relative_prefix, output)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn import_single_gallery_path(
+    app: &AppHandle,
+    source_path: &Path,
+    folder_path: &str,
+    relative_parent_path: Option<&str>,
+) -> Result<GalleryImageEntry, String> {
+    let file_name = source_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(sanitize_file_name)
+        .ok_or_else(|| "failed to resolve import file name".to_string())?;
+    if !is_supported_image_path(Path::new(&file_name)) {
+        return Err("unsupported image format".to_string());
+    }
+
+    let target_folder = compose_gallery_folder_path(folder_path, relative_parent_path)?;
+    let target_dir = if target_folder.is_empty() {
+        images_dir(app)?
+    } else {
+        images_dir(app)?.join(&target_folder)
+    };
+    fs::create_dir_all(&target_dir).map_err(|error| format!("failed to prepare import folder: {error}"))?;
+
+    let target_path = unique_target_path(&target_dir, &file_name);
+    fs::copy(source_path, &target_path).map_err(|error| format!("failed to import image: {error}"))?;
+    let index = read_folder_index_for_folder(app, &target_folder)?;
+    gallery_entry_from_path(app, &target_path, Some(&index))
 }
 
 fn gallery_folder_path_from_image_path(app: &AppHandle, path: &Path) -> Result<String, String> {
@@ -598,29 +674,69 @@ pub(crate) fn delete_image_folder(app: AppHandle, input: DeleteImageFolderInput)
 }
 
 #[tauri::command]
-pub(crate) fn import_gallery_file(
+pub(crate) fn import_gallery_paths(
     app: AppHandle,
-    input: ImportGalleryFileInput,
-) -> Result<GalleryImageEntry, String> {
+    input: ImportGalleryPathsInput,
+) -> Result<ImportGalleryResult, String> {
     ensure_gallery_layout(&app)?;
-    let file_name = sanitize_file_name(&input.file_name);
-    let pseudo_path = Path::new(&file_name);
-    if !is_supported_image_path(pseudo_path) {
-        return Err("unsupported image format".to_string());
+    let target_folder = if input.folder_path == GALLERY_TRASH_FOLDER || input.folder_path.starts_with("trash/") {
+        String::new()
+    } else {
+        normalize_gallery_folder_path(&input.folder_path)?
+    };
+    if input.source_paths.is_empty() {
+        return Ok(ImportGalleryResult {
+            imported_count: 0,
+            last_imported_id: None,
+        });
     }
 
-    let target_folder = compose_gallery_folder_path(&input.folder_path, input.relative_parent_path.as_deref())?;
-    let target_dir = if target_folder.is_empty() {
-        images_dir(&app)?
-    } else {
-        images_dir(&app)?.join(&target_folder)
-    };
-    fs::create_dir_all(&target_dir).map_err(|error| format!("failed to prepare import folder: {error}"))?;
+    let mut import_items = Vec::new();
+    for source_path in &input.source_paths {
+        let source = PathBuf::from(source_path);
+        if source.is_file() {
+            collect_import_items_from_source(&source, false, Path::new(""), &mut import_items)?;
+        } else if source.is_dir() {
+            let relative_prefix = source.parent().unwrap_or(&source);
+            collect_import_items_from_source(&source, input.preserve_folders, relative_prefix, &mut import_items)?;
+        }
+    }
+    if import_items.is_empty() {
+        return Ok(ImportGalleryResult {
+            imported_count: 0,
+            last_imported_id: None,
+        });
+    }
 
-    let target_path = unique_target_path(&target_dir, &file_name);
-    fs::write(&target_path, &input.bytes).map_err(|error| format!("failed to import image: {error}"))?;
-    let index = read_folder_index_for_folder(&app, &target_folder)?;
-    gallery_entry_from_path(&app, &target_path, Some(&index))
+    let total = import_items.len();
+    let mut last_imported_id = None;
+    for (index, (source_path, relative_parent_path)) in import_items.into_iter().enumerate() {
+        let imported = import_single_gallery_path(
+            &app,
+            &source_path,
+            &target_folder,
+            relative_parent_path.as_deref(),
+        )?;
+        last_imported_id = Some(imported.id);
+        let file_name = source_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("image")
+            .to_string();
+        let _ = app.emit(
+            "gallery:import-progress",
+            ImportGalleryProgressPayload {
+                total,
+                completed: index + 1,
+                file_name,
+            },
+        );
+    }
+
+    Ok(ImportGalleryResult {
+        imported_count: total,
+        last_imported_id,
+    })
 }
 
 #[tauri::command]

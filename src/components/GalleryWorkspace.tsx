@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -14,17 +15,13 @@ import {
   Upload,
 } from "lucide-react";
 import type { LocaleMessages } from "../i18n";
-import type { GalleryFolderIndex, GalleryImageEntry } from "../types";
+import type {
+  GalleryFolderIndex,
+  GalleryImageEntry,
+  ImportGalleryProgressPayload,
+} from "../types";
 import { formatFileSize } from "../utils";
 
-type PendingImportItem = {
-  file: File;
-  key: string;
-  previewUrl: string;
-  relativeParentPath: string;
-};
-
-type ImportSource = "files" | "folder";
 type FolderImportMode = "preserve" | "flatten";
 
 type FolderModalState =
@@ -46,13 +43,18 @@ type GalleryWorkspaceProps = {
   selectedImageId: string;
   previewOpen: boolean;
   importing: boolean;
+  importProgress: ImportGalleryProgressPayload | null;
+  currentPage: number;
+  pageSize: number;
   onSelectFolder: (folderPath: string) => void;
+  onCurrentPageChange: (page: number) => void;
+  onPageSizeChange: (size: number) => void;
   onSelectImage: (imageId: string) => void;
   onClosePreview: () => void;
   onCreateFolder: (folderPath: string) => void;
   onRenameFolder: (fromPath: string, toPath: string) => void;
   onDeleteFolder: (folderPath: string) => void;
-  onImportFiles: (items: { file: File; relativeParentPath: string }[]) => Promise<void>;
+  onImportPaths: (sourcePaths: string[], preserveFolders: boolean) => Promise<void>;
   onReadFolderIndex: (folderPath: string) => Promise<GalleryFolderIndex>;
   onWriteImageNote: (folderPath: string, fileName: string, note: string) => Promise<void>;
   onMoveImage: (id: string, folderPath: string) => Promise<void>;
@@ -97,13 +99,18 @@ export function GalleryWorkspace({
   selectedImageId,
   previewOpen,
   importing,
+  importProgress,
+  currentPage,
+  pageSize,
   onSelectFolder,
+  onCurrentPageChange,
+  onPageSizeChange,
   onSelectImage,
   onClosePreview,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
-  onImportFiles,
+  onImportPaths,
   onReadFolderIndex,
   onWriteImageNote,
   onMoveImage,
@@ -116,24 +123,21 @@ export function GalleryWorkspace({
   onStartSidebarResize,
   errorMessage,
 }: GalleryWorkspaceProps) {
-  const importFilesRef = useRef<HTMLInputElement | null>(null);
-  const importFolderRef = useRef<HTMLInputElement | null>(null);
   const menuShellRef = useRef<HTMLDivElement | null>(null);
   const workspaceRootRef = useRef<HTMLDivElement | null>(null);
 
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
   const [activeMenuFolder, setActiveMenuFolder] = useState<string | null>(null);
-  const [pendingImports, setPendingImports] = useState<PendingImportItem[]>([]);
+  const [importModeModalOpen, setImportModeModalOpen] = useState(false);
   const [draftNote, setDraftNote] = useState("");
   const [moveTarget, setMoveTarget] = useState("");
-  const [pendingImportSource, setPendingImportSource] = useState<ImportSource>("files");
   const [folderImportMode, setFolderImportMode] = useState<FolderImportMode>("preserve");
   const [folderIndexCache, setFolderIndexCache] = useState<Record<string, GalleryFolderIndex>>({});
   const [trashContextMenu, setTrashContextMenu] = useState<{ x: number; y: number } | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(12);
   const [gotoPageInput, setGotoPageInput] = useState("");
   const [imagesSuspended, setImagesSuspended] = useState(false);
+  const [renderedImages, setRenderedImages] = useState<GalleryImageEntry[]>([]);
+  const [renderedPreviewImage, setRenderedPreviewImage] = useState<GalleryImageEntry | null>(null);
   const trashContextMenuRef = useRef<HTMLDivElement | null>(null);
 
   const activeImage = images.find((image) => image.id === selectedImageId) ?? null;
@@ -141,14 +145,6 @@ export function GalleryWorkspace({
   const moveTargets = folders.filter((folder) => folder !== activeImage?.folderPath);
   const libraryImages = useMemo(() => allImages.filter((image) => !image.isTrashed), [allImages]);
   const trashImages = useMemo(() => allImages.filter((image) => image.isTrashed), [allImages]);
-
-  useEffect(() => {
-    const folderInput = importFolderRef.current;
-    if (folderInput) {
-      folderInput.setAttribute("webkitdirectory", "");
-      folderInput.setAttribute("directory", "");
-    }
-  }, []);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -162,14 +158,6 @@ export function GalleryWorkspace({
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, []);
-
-  useEffect(() => {
-    return () => {
-      for (const item of pendingImports) {
-        URL.revokeObjectURL(item.previewUrl);
-      }
-    };
-  }, [pendingImports]);
 
   useEffect(() => {
     if (!activeImage) {
@@ -196,8 +184,8 @@ export function GalleryWorkspace({
   }, [activeImage?.folderPath, folderIndexCache, onReadFolderIndex, selectedFolderPath]);
 
   useEffect(() => {
-    setCurrentPage(1);
-  }, [images.length, searchText, selectedFolderPath, pageSize]);
+    onCurrentPageChange(1);
+  }, [images.length, onCurrentPageChange, pageSize, searchText, selectedFolderPath]);
 
   const folderItems = useMemo(
     () =>
@@ -227,8 +215,11 @@ export function GalleryWorkspace({
   useEffect(() => {
     async function bindMinimizeListener() {
       const unlisten = await listen("app:minimize", () => {
+        onClosePreview();
         releaseRenderedImages();
         setImagesSuspended(true);
+        setRenderedImages([]);
+        setRenderedPreviewImage(null);
       });
       return unlisten;
     }
@@ -252,66 +243,81 @@ export function GalleryWorkspace({
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       releaseRenderedImages();
+      setRenderedImages([]);
+      setRenderedPreviewImage(null);
       dispose?.();
       window.removeEventListener("focus", resumeImages);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [onClosePreview]);
 
-  function openImportDialog(mode: "files" | "folder") {
-    setPendingImportSource(mode);
-    if (mode === "folder") {
-      setFolderImportMode("preserve");
+  useEffect(() => {
+    let cancelled = false;
+    setRenderedImages([]);
+    if (imagesSuspended || previewOpen) {
+      return () => {
+        cancelled = true;
+      };
     }
-    if (mode === "files") {
-      importFilesRef.current?.click();
-    } else {
-      importFolderRef.current?.click();
-    }
-  }
-
-  function replacePendingImports(files: FileList | null) {
-    if (!files?.length) return;
-    setPendingImports((current) => {
-      for (const item of current) {
-        URL.revokeObjectURL(item.previewUrl);
+    const timer = window.setTimeout(() => {
+      if (!cancelled) {
+        setRenderedImages(visibleImages);
       }
-      return Array.from(files)
-        .filter((file) => file.type.startsWith("image/"))
-        .map((file, index) => {
-          const relativePath =
-            (file as File & { webkitRelativePath?: string }).webkitRelativePath?.replace(/\\/g, "/") ?? "";
-          const slashIndex = relativePath.lastIndexOf("/");
-          return {
-            file,
-            key: `${file.name}-${index}-${file.size}`,
-            previewUrl: URL.createObjectURL(file),
-            relativeParentPath: slashIndex > -1 ? relativePath.slice(0, slashIndex) : "",
-          };
-        });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      setRenderedImages([]);
+    };
+  }, [imagesSuspended, previewOpen, safeCurrentPage, visibleImages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setRenderedPreviewImage(null);
+    if (imagesSuspended || !previewOpen || !activeImage) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const timer = window.setTimeout(() => {
+      if (!cancelled) {
+        setRenderedPreviewImage(activeImage);
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      setRenderedPreviewImage(null);
+    };
+  }, [activeImage, imagesSuspended, previewOpen]);
+
+  async function openImportFilesDialog() {
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "avif"] }],
     });
+    const sourcePaths = Array.isArray(selected) ? selected : selected ? [selected] : [];
+    if (!sourcePaths.length) return;
+    await onImportPaths(sourcePaths, false);
   }
 
-  async function confirmImport() {
-    if (!pendingImports.length) return;
-    await onImportFiles(
-      pendingImports.map((item) => ({
-        file: item.file,
-        relativeParentPath:
-          pendingImportSource === "folder" && folderImportMode === "preserve" ? item.relativeParentPath : "",
-      })),
-    );
-    for (const item of pendingImports) {
-      URL.revokeObjectURL(item.previewUrl);
-    }
-    setPendingImports([]);
+  async function confirmFolderImport() {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+    });
+    const sourcePath = typeof selected === "string" ? selected : null;
+    setImportModeModalOpen(false);
+    if (!sourcePath) return;
+    await onImportPaths([sourcePath], folderImportMode === "preserve");
   }
 
   function submitGotoPage() {
     const nextPage = Number(gotoPageInput);
     if (!Number.isFinite(nextPage)) return;
     const normalized = Math.min(Math.max(Math.trunc(nextPage), 1), totalPages);
-    setCurrentPage(normalized);
+    onCurrentPageChange(normalized);
     setGotoPageInput("");
   }
 
@@ -357,29 +363,6 @@ export function GalleryWorkspace({
 
   return (
     <>
-      <input
-        ref={importFilesRef}
-        className="visually-hidden"
-        type="file"
-        accept="image/*"
-        multiple
-        onChange={(event) => {
-          replacePendingImports(event.target.files);
-          event.target.value = "";
-        }}
-      />
-      <input
-        ref={importFolderRef}
-        className="visually-hidden"
-        type="file"
-        accept="image/*"
-        multiple
-        onChange={(event) => {
-          replacePendingImports(event.target.files);
-          event.target.value = "";
-        }}
-      />
-
       <div
         ref={workspaceRootRef}
         className="module-body notes-module-body"
@@ -392,7 +375,8 @@ export function GalleryWorkspace({
               className="sidebar-action-button"
               aria-label={messages.galleryImportFilesButton}
               title={messages.galleryImportFilesButton}
-              onClick={() => openImportDialog("files")}
+              disabled={importing}
+              onClick={() => void openImportFilesDialog()}
             >
               <Upload size={17} strokeWidth={1.8} />
               <span>{messages.galleryImportFilesButton}</span>
@@ -402,7 +386,11 @@ export function GalleryWorkspace({
               className="sidebar-action-button"
               aria-label={messages.galleryImportFolderButton}
               title={messages.galleryImportFolderButton}
-              onClick={() => openImportDialog("folder")}
+              disabled={importing}
+              onClick={() => {
+                setFolderImportMode("preserve");
+                setImportModeModalOpen(true);
+              }}
             >
               <ImagePlus size={17} strokeWidth={1.8} />
               <span>{messages.galleryImportFolderButton}</span>
@@ -544,6 +532,11 @@ export function GalleryWorkspace({
             <span className="meta-pill">
               {messages.galleryResultCountLabel.replace("{count}", String(images.length))}
             </span>
+            {importing && importProgress ? (
+              <span className="meta-pill">
+                {`${messages.galleryImportingLabel} ${importProgress.completed}/${importProgress.total}`}
+              </span>
+            ) : null}
           </div>
 
           <div className="gallery-main-scroll">
@@ -591,7 +584,12 @@ export function GalleryWorkspace({
                       </button>
 
                       <div className="gallery-preview-image-frame">
-                        <img src={buildAssetUrl(activeImage.absolutePath)} alt={activeImage.fileName} />
+                        {renderedPreviewImage ? (
+                          <img
+                            src={buildAssetUrl(renderedPreviewImage.absolutePath)}
+                            alt={renderedPreviewImage.fileName}
+                          />
+                        ) : null}
                       </div>
 
                       <button
@@ -721,7 +719,7 @@ export function GalleryWorkspace({
               ) : (
                 <div className="gallery-grid-scroll">
                   <div className="gallery-grid">
-                    {visibleImages.map((image) => (
+                    {renderedImages.map((image) => (
                       <button
                         key={image.id}
                         type="button"
@@ -731,7 +729,7 @@ export function GalleryWorkspace({
                       >
                         <div className="gallery-card-thumb">
                           <img
-                            src={imagesSuspended ? undefined : buildAssetUrl(image.absolutePath)}
+                            src={buildAssetUrl(image.absolutePath)}
                             alt={image.fileName}
                             loading="lazy"
                           />
@@ -750,7 +748,7 @@ export function GalleryWorkspace({
                 type="button"
                 className="soft-button"
                 disabled={safeCurrentPage <= 1}
-                onClick={() => setCurrentPage((current) => Math.max(current - 1, 1))}
+                onClick={() => onCurrentPageChange(Math.max(safeCurrentPage - 1, 1))}
               >
                 {"<"}
               </button>
@@ -764,7 +762,7 @@ export function GalleryWorkspace({
                     <button
                       type="button"
                       className={`soft-button ${page === safeCurrentPage ? "is-active" : ""}`}
-                      onClick={() => setCurrentPage(page)}
+                      onClick={() => onCurrentPageChange(page)}
                     >
                       {page}
                     </button>
@@ -775,11 +773,11 @@ export function GalleryWorkspace({
                 type="button"
                 className="soft-button"
                 disabled={safeCurrentPage >= totalPages}
-                onClick={() => setCurrentPage((current) => Math.min(current + 1, totalPages))}
+                onClick={() => onCurrentPageChange(Math.min(safeCurrentPage + 1, totalPages))}
               >
                 {">"}
               </button>
-              <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value) || 12)}>
+              <select value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value) || 12)}>
                 <option value={12}>12 / page</option>
                 <option value={20}>20 / page</option>
                 <option value={40}>40 / page</option>
@@ -844,53 +842,39 @@ export function GalleryWorkspace({
         </div>
       ) : null}
 
-      {pendingImports.length ? (
-        <div className="inline-modal-backdrop" onClick={() => !importing && setPendingImports([])}>
+      {importModeModalOpen ? (
+        <div className="inline-modal-backdrop" onClick={() => !importing && setImportModeModalOpen(false)}>
           <div className="inline-modal gallery-import-modal" onClick={(event) => event.stopPropagation()}>
             <div className="inline-modal-header">
-              <h3>{messages.galleryImportPreviewTitle}</h3>
+              <h3>{messages.galleryImportFolderButton}</h3>
             </div>
 
             <p className="gallery-import-summary">
               {messages.galleryImportPreviewBody
-                .replace("{count}", String(pendingImports.length))
+                .replace("{count}", "1+")
                 .replace("{folder}", selectedFolderPath || messages.galleryRootFolderLabel)}
             </p>
 
-            {pendingImportSource === "folder" ? (
-              <div className="settings-field">
-                <span>{messages.galleryImportModeLabel}</span>
-                <label className="settings-toggle">
-                  <input
-                    type="radio"
-                    name="gallery-import-mode"
-                    checked={folderImportMode === "preserve"}
-                    onChange={() => setFolderImportMode("preserve")}
-                  />
-                  <span>{messages.galleryImportModePreserve}</span>
-                </label>
-                <label className="settings-toggle">
-                  <input
-                    type="radio"
-                    name="gallery-import-mode"
-                    checked={folderImportMode === "flatten"}
-                    onChange={() => setFolderImportMode("flatten")}
-                  />
-                  <span>{messages.galleryImportModeFlatten}</span>
-                </label>
-              </div>
-            ) : null}
-
-            <div className="gallery-import-list">
-              {pendingImports.slice(0, 12).map((item) => (
-                <div key={item.key} className="gallery-import-row">
-                  <img src={item.previewUrl} alt={item.file.name} />
-                  <div>
-                    <strong>{item.file.name}</strong>
-                    <span>{item.relativeParentPath || messages.galleryRootFolderLabel}</span>
-                  </div>
-                </div>
-              ))}
+            <div className="settings-field">
+              <span>{messages.galleryImportModeLabel}</span>
+              <label className="settings-toggle">
+                <input
+                  type="radio"
+                  name="gallery-import-mode"
+                  checked={folderImportMode === "preserve"}
+                  onChange={() => setFolderImportMode("preserve")}
+                />
+                <span>{messages.galleryImportModePreserve}</span>
+              </label>
+              <label className="settings-toggle">
+                <input
+                  type="radio"
+                  name="gallery-import-mode"
+                  checked={folderImportMode === "flatten"}
+                  onChange={() => setFolderImportMode("flatten")}
+                />
+                <span>{messages.galleryImportModeFlatten}</span>
+              </label>
             </div>
 
             <div className="inline-modal-actions">
@@ -898,11 +882,16 @@ export function GalleryWorkspace({
                 type="button"
                 className="soft-button"
                 disabled={importing}
-                onClick={() => setPendingImports([])}
+                onClick={() => setImportModeModalOpen(false)}
               >
                 {messages.cancelButton}
               </button>
-              <button type="button" className="soft-button" disabled={importing} onClick={() => void confirmImport()}>
+              <button
+                type="button"
+                className="soft-button"
+                disabled={importing}
+                onClick={() => void confirmFolderImport()}
+              >
                 {importing ? messages.galleryImportingLabel : messages.confirmButton}
               </button>
             </div>

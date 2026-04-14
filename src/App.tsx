@@ -3,6 +3,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { listen } from "@tauri-apps/api/event";
 import {
   KeyboardEvent,
   startTransition,
@@ -23,6 +24,8 @@ import type {
   GalleryFolderIndex,
   GalleryBootstrapPayload,
   GalleryImageEntry,
+  ImportGalleryProgressPayload,
+  ImportGalleryResult,
   GalleryWorkspacePayload,
   NoteDetail,
   NoteSummary,
@@ -70,7 +73,10 @@ function App() {
   const [gallerySearchText, setGallerySearchText] = useState("");
   const [galleryBooting, setGalleryBooting] = useState(true);
   const [galleryImporting, setGalleryImporting] = useState(false);
+  const [galleryImportProgress, setGalleryImportProgress] = useState<ImportGalleryProgressPayload | null>(null);
   const [galleryErrorMessage, setGalleryErrorMessage] = useState("");
+  const [galleryCurrentPage, setGalleryCurrentPage] = useState(1);
+  const [galleryPageSize, setGalleryPageSize] = useState(12);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(290);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
@@ -92,6 +98,23 @@ function App() {
     () => notes.filter((note) => note.isDraft).sort((left, right) => right.updatedAt - left.updatedAt),
     [notes],
   );
+
+  useEffect(() => {
+    if (activeModule !== "gallery") {
+      setGalleryPreviewOpen(false);
+      setSelectedGalleryImageId("");
+    }
+  }, [activeModule]);
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    void listen<ImportGalleryProgressPayload>("gallery:import-progress", (event) => {
+      setGalleryImportProgress(event.payload);
+    }).then((unlisten) => {
+      dispose = unlisten;
+    });
+    return () => dispose?.();
+  }, []);
 
   function isFolderPathWithin(folderPath: string, rootFolder: string) {
     return folderPath === rootFolder || folderPath.startsWith(`${rootFolder}/`);
@@ -710,27 +733,22 @@ function App() {
     }
   }
 
-  async function importGalleryFiles(items: { file: File; relativeParentPath: string }[]) {
-    if (!items.length) return;
+  async function importGalleryPaths(sourcePaths: string[], preserveFolders: boolean) {
+    if (!sourcePaths.length) return;
     setGalleryImporting(true);
+    setGalleryImportProgress({ total: sourcePaths.length, completed: 0, fileName: "" });
     setGalleryErrorMessage("");
     try {
-      let lastImportedId = "";
-      for (const item of items) {
-        const bytes = Array.from(new Uint8Array(await item.file.arrayBuffer()));
-        const imported = await invoke<GalleryImageEntry>("import_gallery_file", {
-          input: {
-            fileName: item.file.name,
-            folderPath: selectedGalleryFolderPath === "trash" ? "" : selectedGalleryFolderPath,
-            relativeParentPath: item.relativeParentPath,
-            bytes,
-          },
-        });
-        lastImportedId = imported.id;
-      }
+      const imported = await invoke<ImportGalleryResult>("import_gallery_paths", {
+        input: {
+          sourcePaths,
+          folderPath: selectedGalleryFolderPath === "trash" ? "" : selectedGalleryFolderPath,
+          preserveFolders,
+        },
+      });
       await refreshGalleryWorkspace();
-      if (lastImportedId) {
-        setSelectedGalleryImageId(lastImportedId);
+      if (imported.lastImportedId) {
+        setSelectedGalleryImageId(imported.lastImportedId);
         setGalleryPreviewOpen(true);
       }
     } catch (error) {
@@ -738,6 +756,7 @@ function App() {
       setGalleryErrorMessage(mapGalleryErrorMessage(message));
     } finally {
       setGalleryImporting(false);
+      setGalleryImportProgress(null);
     }
   }
 
@@ -1074,7 +1093,12 @@ function App() {
       selectedImageId={selectedGalleryImageId}
       previewOpen={galleryPreviewOpen}
       importing={galleryImporting}
+      importProgress={galleryImportProgress}
+      currentPage={galleryCurrentPage}
+      pageSize={galleryPageSize}
       onSelectFolder={setSelectedGalleryFolderPath}
+      onCurrentPageChange={setGalleryCurrentPage}
+      onPageSizeChange={setGalleryPageSize}
       onSelectImage={(imageId) => {
         setSelectedGalleryImageId(imageId);
         setGalleryPreviewOpen(true);
@@ -1083,7 +1107,7 @@ function App() {
       onCreateFolder={(folderPath) => void createImageFolder(folderPath)}
       onRenameFolder={(fromPath, toPath) => void renameImageFolder(fromPath, toPath)}
       onDeleteFolder={(folderPath) => void deleteImageFolder(folderPath)}
-      onImportFiles={importGalleryFiles}
+      onImportPaths={importGalleryPaths}
       onReadFolderIndex={readGalleryFolderIndex}
       onWriteImageNote={writeGalleryImageNote}
       onMoveImage={moveGalleryImage}

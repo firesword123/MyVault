@@ -80,3 +80,14 @@ export type GalleryWorkspacePayload = {
   images: GalleryImageEntry[];
   folders: string[];
 };
+
+export type ImportGalleryResult = {
+  importedCount: number;
+  lastImportedId: string | null;
+};
+
+export type ImportGalleryProgressPayload = {
+  total: number;
+  completed: number;
+  fileName: string;
+};
