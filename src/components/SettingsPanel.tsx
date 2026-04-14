@@ -11,12 +11,20 @@ type SettingsPanelProps = {
   language: string;
   showNoteTime: boolean;
   closeBehavior: "quit" | "tray";
+  httpProxy: string;
+  httpsProxy: string;
+  allProxy: string;
+  noProxy: string;
   vaultPath: string;
   colorPresets: string[];
   colorPresetCount: number;
   onLanguageChange: (language: string) => void;
   onShowNoteTimeChange: (checked: boolean) => void;
   onCloseBehaviorChange: (behavior: "quit" | "tray") => void;
+  onHttpProxyChange: (value: string) => void;
+  onHttpsProxyChange: (value: string) => void;
+  onAllProxyChange: (value: string) => void;
+  onNoProxyChange: (value: string) => void;
   onColorPresetsChange: (colors: string[]) => void;
   onColorPresetCountChange: (count: number) => void;
   onUpdateAction: () => void;
@@ -33,12 +41,20 @@ export function SettingsPanel({
   language,
   showNoteTime,
   closeBehavior,
+  httpProxy,
+  httpsProxy,
+  allProxy,
+  noProxy,
   vaultPath,
   colorPresets,
   colorPresetCount,
   onLanguageChange,
   onShowNoteTimeChange,
   onCloseBehaviorChange,
+  onHttpProxyChange,
+  onHttpsProxyChange,
+  onAllProxyChange,
+  onNoProxyChange,
   onColorPresetsChange,
   onColorPresetCountChange,
   onUpdateAction,
@@ -63,85 +79,132 @@ export function SettingsPanel({
         </button>
       </div>
 
-      <label className="settings-field">
-        <span>{messages.languageLabel}</span>
-        <select value={language} onChange={(event) => onLanguageChange(event.target.value)}>
-          <option value="zh-CN">{messages.languageZhCn}</option>
-          <option value="en-US">{messages.languageEnUs}</option>
-        </select>
-      </label>
+      <div className="settings-panel-body">
+        <label className="settings-field">
+          <span>{messages.languageLabel}</span>
+          <select value={language} onChange={(event) => onLanguageChange(event.target.value)}>
+            <option value="zh-CN">{messages.languageZhCn}</option>
+            <option value="en-US">{messages.languageEnUs}</option>
+          </select>
+        </label>
 
-      <div className="settings-field">
-        <span>{messages.versionLabel}</span>
-        <div className="settings-static-value">{version}</div>
-      </div>
+        <div className="settings-field">
+          <span>{messages.versionLabel}</span>
+          <div className="settings-static-value">{version}</div>
+        </div>
 
-      <div className="settings-field">
-        <span>{messages.updateLabel}</span>
-        <div className="settings-static-value">{updateStatus}</div>
-        <button
-          type="button"
-          className="soft-button"
-          disabled={updateActionDisabled}
-          onClick={onUpdateAction}
-        >
-          {updateActionLabel}
-        </button>
-      </div>
+        <div className="settings-field">
+          <span>{messages.updateLabel}</span>
+          <div className="settings-static-value">{updateStatus}</div>
+          <button
+            type="button"
+            className="soft-button"
+            disabled={updateActionDisabled}
+            onClick={onUpdateAction}
+          >
+            {updateActionLabel}
+          </button>
+        </div>
 
-      <div className="settings-field">
-        <span>{messages.vaultLabel}</span>
-        <div className="settings-static-value">{vaultPath || "Resolving..."}</div>
-      </div>
+        <div className="settings-field">
+          <span>{messages.networkSectionLabel}</span>
+          <p className="settings-help-text">{messages.networkHint}</p>
+        </div>
 
-      <label className="settings-toggle">
-        <input
-          type="checkbox"
-          checked={showNoteTime}
-          onChange={(event) => onShowNoteTimeChange(event.target.checked)}
-        />
-        <span>{messages.showTimeLabel}</span>
-      </label>
+        <label className="settings-field">
+          <span>{messages.httpProxyLabel}</span>
+          <input
+            type="text"
+            value={httpProxy}
+            placeholder="http://127.0.0.1:7890"
+            onChange={(event) => onHttpProxyChange(event.target.value)}
+          />
+        </label>
 
-      <label className="settings-field">
-        <span>{messages.closeBehaviorLabel}</span>
-        <select
-          value={closeBehavior}
-          onChange={(event) => onCloseBehaviorChange(event.target.value as "quit" | "tray")}
-        >
-          <option value="quit">{messages.closeBehaviorQuit}</option>
-          <option value="tray">{messages.closeBehaviorTray}</option>
-        </select>
-      </label>
+        <label className="settings-field">
+          <span>{messages.httpsProxyLabel}</span>
+          <input
+            type="text"
+            value={httpsProxy}
+            placeholder="http://127.0.0.1:7890"
+            onChange={(event) => onHttpsProxyChange(event.target.value)}
+          />
+        </label>
 
-      <label className="settings-field">
-        <span>{messages.colorPresetCountLabel}</span>
-        <input
-          type="number"
-          min={1}
-          max={8}
-          value={colorPresetCount}
-          onChange={(event) => onColorPresetCountChange(Number(event.target.value) || 1)}
-        />
-      </label>
+        <label className="settings-field">
+          <span>{messages.allProxyLabel}</span>
+          <input
+            type="text"
+            value={allProxy}
+            placeholder="socks5://127.0.0.1:7891"
+            onChange={(event) => onAllProxyChange(event.target.value)}
+          />
+        </label>
 
-      <div className="settings-field">
-        <span>{messages.colorPresetsLabel}</span>
-        <div className="settings-color-grid">
-          {visiblePresets.map((color, index) => (
-            <label key={`${index}-${color}`} className="settings-color-item">
-              <span>{messages.colorPresetItemLabel.replace("{index}", String(index + 1))}</span>
-              <input
-                type="color"
-                value={color}
-                onChange={(event) => {
-                  const next = [...colorPresets];
-                  next[index] = event.target.value;
-                  onColorPresetsChange(next);
-                }}
-              />
-            </label>
-          ))}
+        <label className="settings-field">
+          <span>{messages.noProxyLabel}</span>
+          <input
+            type="text"
+            value={noProxy}
+            placeholder="localhost,127.0.0.1,.corp.local"
+            onChange={(event) => onNoProxyChange(event.target.value)}
+          />
+        </label>
+
+        <div className="settings-field">
+          <span>{messages.vaultLabel}</span>
+          <div className="settings-static-value">{vaultPath || "Resolving..."}</div>
+        </div>
+
+        <label className="settings-toggle">
+          <input
+            type="checkbox"
+            checked={showNoteTime}
+            onChange={(event) => onShowNoteTimeChange(event.target.checked)}
+          />
+          <span>{messages.showTimeLabel}</span>
+        </label>
+
+        <label className="settings-field">
+          <span>{messages.closeBehaviorLabel}</span>
+          <select
+            value={closeBehavior}
+            onChange={(event) => onCloseBehaviorChange(event.target.value as "quit" | "tray")}
+          >
+            <option value="quit">{messages.closeBehaviorQuit}</option>
+            <option value="tray">{messages.closeBehaviorTray}</option>
+          </select>
+        </label>
+
+        <label className="settings-field">
+          <span>{messages.colorPresetCountLabel}</span>
+          <input
+            type="number"
+            min={1}
+            max={8}
+            value={colorPresetCount}
+            onChange={(event) => onColorPresetCountChange(Number(event.target.value) || 1)}
+          />
+        </label>
+
+        <div className="settings-field">
+          <span>{messages.colorPresetsLabel}</span>
+          <div className="settings-color-grid">
+            {visiblePresets.map((color, index) => (
+              <label key={`${index}-${color}`} className="settings-color-item">
+                <span>{messages.colorPresetItemLabel.replace("{index}", String(index + 1))}</span>
+                <input
+                  type="color"
+                  value={color}
+                  onChange={(event) => {
+                    const next = [...colorPresets];
+                    next[index] = event.target.value;
+                    onColorPresetsChange(next);
+                  }}
+                />
+              </label>
+            ))}
+          </div>
         </div>
       </div>
     </aside>

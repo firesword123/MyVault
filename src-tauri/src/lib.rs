@@ -9,6 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{
+    Emitter,
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -122,6 +123,14 @@ struct AppSettings {
     color_preset_count: usize,
     #[serde(default = "default_close_behavior")]
     close_behavior: String,
+    #[serde(default)]
+    http_proxy: String,
+    #[serde(default)]
+    https_proxy: String,
+    #[serde(default)]
+    all_proxy: String,
+    #[serde(default)]
+    no_proxy: String,
 }
 
 fn default_language() -> String {
@@ -162,7 +171,39 @@ fn default_settings() -> AppSettings {
         color_presets: normalized_color_presets(),
         color_preset_count: default_color_preset_count(),
         close_behavior: default_close_behavior(),
+        http_proxy: String::new(),
+        https_proxy: String::new(),
+        all_proxy: String::new(),
+        no_proxy: String::new(),
     }
+}
+
+fn normalize_proxy_value(raw: &str) -> String {
+    raw.trim().to_string()
+}
+
+fn apply_process_proxy(var: &str, value: &str) {
+    if value.is_empty() {
+        unsafe {
+            std::env::remove_var(var);
+        }
+        return;
+    }
+
+    unsafe {
+        std::env::set_var(var, value);
+    }
+}
+
+fn apply_network_settings(settings: &AppSettings) {
+    apply_process_proxy("HTTP_PROXY", &settings.http_proxy);
+    apply_process_proxy("HTTPS_PROXY", &settings.https_proxy);
+    apply_process_proxy("ALL_PROXY", &settings.all_proxy);
+    apply_process_proxy("NO_PROXY", &settings.no_proxy);
+    apply_process_proxy("http_proxy", &settings.http_proxy);
+    apply_process_proxy("https_proxy", &settings.https_proxy);
+    apply_process_proxy("all_proxy", &settings.all_proxy);
+    apply_process_proxy("no_proxy", &settings.no_proxy);
 }
 
 #[derive(Clone)]
@@ -339,11 +380,16 @@ fn save_settings_file(app: &AppHandle, settings: &AppSettings) -> Result<AppSett
     }
     presets.resize(normalized.color_preset_count, "#3b82f6".to_string());
     normalized.color_presets = presets;
+    normalized.http_proxy = normalize_proxy_value(&normalized.http_proxy);
+    normalized.https_proxy = normalize_proxy_value(&normalized.https_proxy);
+    normalized.all_proxy = normalize_proxy_value(&normalized.all_proxy);
+    normalized.no_proxy = normalize_proxy_value(&normalized.no_proxy);
 
     let path = settings_path(app)?;
     let raw = serde_json::to_string_pretty(&normalized)
         .map_err(|error| format!("failed to serialize settings: {error}"))?;
     write_utf8_file(&path, &raw).map_err(|error| format!("failed to save settings: {error}"))?;
+    apply_network_settings(&normalized);
     Ok(normalized)
 }
 
@@ -1113,6 +1159,7 @@ fn empty_trash(app: AppHandle) -> Result<Vec<NoteSummary>, String> {
 
 #[tauri::command]
 fn minimize_window(window: Window) -> Result<(), String> {
+    let _ = window.emit("app:minimize", ());
     window
         .minimize()
         .map_err(|error| format!("failed to minimize window: {error}"))
@@ -1154,6 +1201,10 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().pubkey(include_str!("../../updater.key.pub").trim()).build())
         .setup(|app| {
+            ensure_vault_layout(app.handle()).map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let settings =
+                load_settings(app.handle()).map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            apply_network_settings(&settings);
             setup_tray(app.handle()).map_err(Into::into)
         })
         .on_window_event(|window, event| {
@@ -1186,8 +1237,9 @@ pub fn run() {
             delete_note,
             empty_trash,
             move_note,
+            gallery::read_folder_index,
+            gallery::write_image_note,
             gallery::import_gallery_file,
-            gallery::update_gallery_image_meta,
             gallery::move_gallery_image,
             gallery::trash_gallery_image,
             gallery::restore_gallery_image,

@@ -1,4 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -9,13 +10,12 @@ import {
   ImagePlus,
   MoreHorizontal,
   Pencil,
-  Tag,
   Trash2,
   Upload,
 } from "lucide-react";
 import type { LocaleMessages } from "../i18n";
-import type { GalleryImageEntry } from "../types";
-import { formatFileSize, formatTimestamp } from "../utils";
+import type { GalleryFolderIndex, GalleryImageEntry } from "../types";
+import { formatFileSize } from "../utils";
 
 type PendingImportItem = {
   file: File;
@@ -24,13 +24,13 @@ type PendingImportItem = {
   relativeParentPath: string;
 };
 
+type ImportSource = "files" | "folder";
+type FolderImportMode = "preserve" | "flatten";
+
 type FolderModalState =
   | { mode: "create"; value: string }
   | { mode: "rename"; folderPath: string; value: string }
   | null;
-
-const INITIAL_IMAGE_BATCH = 60;
-const IMAGE_BATCH_STEP = 40;
 
 type GalleryWorkspaceProps = {
   messages: LocaleMessages;
@@ -42,21 +42,19 @@ type GalleryWorkspaceProps = {
   allImages: GalleryImageEntry[];
   images: GalleryImageEntry[];
   folders: string[];
-  tags: string[];
   selectedFolderPath: string;
-  selectedTag: string;
   selectedImageId: string;
   previewOpen: boolean;
   importing: boolean;
   onSelectFolder: (folderPath: string) => void;
-  onSelectTag: (tag: string) => void;
   onSelectImage: (imageId: string) => void;
   onClosePreview: () => void;
   onCreateFolder: (folderPath: string) => void;
   onRenameFolder: (fromPath: string, toPath: string) => void;
   onDeleteFolder: (folderPath: string) => void;
   onImportFiles: (items: { file: File; relativeParentPath: string }[]) => Promise<void>;
-  onUpdateImageMeta: (id: string, tags: string[], note: string) => Promise<void>;
+  onReadFolderIndex: (folderPath: string) => Promise<GalleryFolderIndex>;
+  onWriteImageNote: (folderPath: string, fileName: string, note: string) => Promise<void>;
   onMoveImage: (id: string, folderPath: string) => Promise<void>;
   onDeleteImage: (id: string) => Promise<void>;
   onRestoreImage: (id: string) => Promise<void>;
@@ -77,14 +75,6 @@ function buildAssetUrl(absolutePath: string) {
   return convertFileSrc(absolutePath);
 }
 
-function normalizeTagInput(raw: string) {
-  const next = raw
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
-  return Array.from(new Map(next.map((value) => [value.toLowerCase(), value])).values());
-}
-
 function positionContextMenu(clientX: number, clientY: number, menuWidth: number, menuHeight: number) {
   const padding = 12;
   return {
@@ -103,21 +93,19 @@ export function GalleryWorkspace({
   allImages,
   images,
   folders,
-  tags,
   selectedFolderPath,
-  selectedTag,
   selectedImageId,
   previewOpen,
   importing,
   onSelectFolder,
-  onSelectTag,
   onSelectImage,
   onClosePreview,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
   onImportFiles,
-  onUpdateImageMeta,
+  onReadFolderIndex,
+  onWriteImageNote,
   onMoveImage,
   onDeleteImage,
   onRestoreImage,
@@ -131,18 +119,21 @@ export function GalleryWorkspace({
   const importFilesRef = useRef<HTMLInputElement | null>(null);
   const importFolderRef = useRef<HTMLInputElement | null>(null);
   const menuShellRef = useRef<HTMLDivElement | null>(null);
-  const gridSentinelRef = useRef<HTMLDivElement | null>(null);
-  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRootRef = useRef<HTMLDivElement | null>(null);
 
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
   const [activeMenuFolder, setActiveMenuFolder] = useState<string | null>(null);
   const [pendingImports, setPendingImports] = useState<PendingImportItem[]>([]);
-  const [draftTags, setDraftTags] = useState("");
   const [draftNote, setDraftNote] = useState("");
   const [moveTarget, setMoveTarget] = useState("");
-  const [visibleCount, setVisibleCount] = useState(INITIAL_IMAGE_BATCH);
-  const [tagsCollapsed, setTagsCollapsed] = useState(false);
+  const [pendingImportSource, setPendingImportSource] = useState<ImportSource>("files");
+  const [folderImportMode, setFolderImportMode] = useState<FolderImportMode>("preserve");
+  const [folderIndexCache, setFolderIndexCache] = useState<Record<string, GalleryFolderIndex>>({});
   const [trashContextMenu, setTrashContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(12);
+  const [gotoPageInput, setGotoPageInput] = useState("");
+  const [imagesSuspended, setImagesSuspended] = useState(false);
   const trashContextMenuRef = useRef<HTMLDivElement | null>(null);
 
   const activeImage = images.find((image) => image.id === selectedImageId) ?? null;
@@ -182,37 +173,31 @@ export function GalleryWorkspace({
 
   useEffect(() => {
     if (!activeImage) {
-      setDraftTags("");
       setDraftNote("");
       setMoveTarget("");
       return;
     }
-    setDraftTags(activeImage.tags.join(", "));
-    setDraftNote(activeImage.note);
+    const note = folderIndexCache[activeImage.folderPath]?.images?.[activeImage.fileName]?.note ?? activeImage.note;
+    setDraftNote(note);
     setMoveTarget(moveTargets[0] ?? "");
-  }, [activeImage?.id, activeImage?.note, activeImage?.tags, moveTargets]);
+  }, [activeImage?.id, activeImage?.note, activeImage?.fileName, activeImage?.folderPath, folderIndexCache, moveTargets]);
 
   useEffect(() => {
-    setVisibleCount(INITIAL_IMAGE_BATCH);
-  }, [searchText, selectedFolderPath, selectedTag, images.length]);
+    async function loadFolderIndex(folderPath: string) {
+      if (folderPath in folderIndexCache) return;
+      const index = await onReadFolderIndex(folderPath);
+      setFolderIndexCache((current) => ({ ...current, [folderPath]: index }));
+    }
+
+    const folderPath = activeImage ? activeImage.folderPath : selectedFolderPath;
+    if (folderPath === "trash" || folderPath.startsWith("trash/")) return;
+    if (!activeImage && !folderPath) return;
+    void loadFolderIndex(folderPath);
+  }, [activeImage?.folderPath, folderIndexCache, onReadFolderIndex, selectedFolderPath]);
 
   useEffect(() => {
-    if (previewOpen) return;
-    const root = gridScrollRef.current;
-    const target = gridSentinelRef.current;
-    if (!root || !target) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (!entries[0]?.isIntersecting) return;
-        setVisibleCount((current) => Math.min(current + IMAGE_BATCH_STEP, images.length));
-      },
-      { root, rootMargin: "0px 0px 320px 0px" },
-    );
-
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [images.length, previewOpen]);
+    setCurrentPage(1);
+  }, [images.length, searchText, selectedFolderPath, pageSize]);
 
   const folderItems = useMemo(
     () =>
@@ -229,21 +214,55 @@ export function GalleryWorkspace({
     [folders, libraryImages],
   );
 
-  const tagItems = useMemo(
-    () =>
-      tags
-        .map((tag) => ({
-          tag,
-          count: libraryImages.filter((image) => image.tags.some((item) => item.toLowerCase() === tag.toLowerCase()))
-            .length,
-        }))
-        .filter((item) => item.count > 0),
-    [libraryImages, tags],
-  );
+  const totalPages = Math.max(1, Math.ceil(images.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const visibleImages = images.slice((safeCurrentPage - 1) * pageSize, safeCurrentPage * pageSize);
 
-  const visibleImages = images.slice(0, visibleCount);
+  function releaseRenderedImages() {
+    workspaceRootRef.current?.querySelectorAll("img").forEach((node) => {
+      node.removeAttribute("src");
+    });
+  }
+
+  useEffect(() => {
+    async function bindMinimizeListener() {
+      const unlisten = await listen("app:minimize", () => {
+        releaseRenderedImages();
+        setImagesSuspended(true);
+      });
+      return unlisten;
+    }
+
+    let dispose: (() => void) | undefined;
+    void bindMinimizeListener().then((unlisten) => {
+      dispose = unlisten;
+    });
+
+    function resumeImages() {
+      setImagesSuspended(false);
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        resumeImages();
+      }
+    }
+
+    window.addEventListener("focus", resumeImages);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      releaseRenderedImages();
+      dispose?.();
+      window.removeEventListener("focus", resumeImages);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   function openImportDialog(mode: "files" | "folder") {
+    setPendingImportSource(mode);
+    if (mode === "folder") {
+      setFolderImportMode("preserve");
+    }
     if (mode === "files") {
       importFilesRef.current?.click();
     } else {
@@ -278,7 +297,8 @@ export function GalleryWorkspace({
     await onImportFiles(
       pendingImports.map((item) => ({
         file: item.file,
-        relativeParentPath: item.relativeParentPath,
+        relativeParentPath:
+          pendingImportSource === "folder" && folderImportMode === "preserve" ? item.relativeParentPath : "",
       })),
     );
     for (const item of pendingImports) {
@@ -286,6 +306,25 @@ export function GalleryWorkspace({
     }
     setPendingImports([]);
   }
+
+  function submitGotoPage() {
+    const nextPage = Number(gotoPageInput);
+    if (!Number.isFinite(nextPage)) return;
+    const normalized = Math.min(Math.max(Math.trunc(nextPage), 1), totalPages);
+    setCurrentPage(normalized);
+    setGotoPageInput("");
+  }
+
+  const pageNumbers = useMemo(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, index) => index + 1);
+    }
+
+    const pages = new Set<number>([1, totalPages, safeCurrentPage - 1, safeCurrentPage, safeCurrentPage + 1]);
+    return Array.from(pages)
+      .filter((page) => page >= 1 && page <= totalPages)
+      .sort((left, right) => left - right);
+  }, [safeCurrentPage, totalPages]);
 
   function submitFolderModal() {
     if (!folderModal) return;
@@ -299,9 +338,21 @@ export function GalleryWorkspace({
     setFolderModal(null);
   }
 
-  async function saveMeta() {
-    if (!activeImage) return;
-    await onUpdateImageMeta(activeImage.id, normalizeTagInput(draftTags), draftNote);
+  async function saveNote() {
+    if (!activeImage || activeImage.isTrashed) return;
+    const currentNote = folderIndexCache[activeImage.folderPath]?.images?.[activeImage.fileName]?.note ?? activeImage.note;
+    if (draftNote === currentNote) return;
+    await onWriteImageNote(activeImage.folderPath, activeImage.fileName, draftNote);
+    setFolderIndexCache((current) => ({
+      ...current,
+      [activeImage.folderPath]: {
+        version: current[activeImage.folderPath]?.version ?? 1,
+        images: {
+          ...(current[activeImage.folderPath]?.images ?? {}),
+          [activeImage.fileName]: { note: draftNote },
+        },
+      },
+    }));
   }
 
   return (
@@ -329,7 +380,11 @@ export function GalleryWorkspace({
         }}
       />
 
-      <div className="module-body notes-module-body" style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}>
+      <div
+        ref={workspaceRootRef}
+        className="module-body notes-module-body"
+        style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}
+      >
         <aside className="sidebar gallery-sidebar-panel">
           <div className="sidebar-action-stack gallery-sidebar-actions">
             <button
@@ -368,12 +423,9 @@ export function GalleryWorkspace({
             <div className="gallery-sidebar-scroll">
             <button
               type="button"
-              className={`gallery-filter-button ${!selectedFolderPath && !selectedTag ? "is-active" : ""}`}
+              className={`gallery-filter-button ${!selectedFolderPath ? "is-active" : ""}`}
               title={messages.galleryAllImagesLabel}
-              onClick={() => {
-                onSelectTag("");
-                onSelectFolder("");
-              }}
+              onClick={() => onSelectFolder("")}
             >
               <Folder size={15} strokeWidth={1.8} />
               <span>{messages.galleryAllImagesLabel}</span>
@@ -385,15 +437,10 @@ export function GalleryWorkspace({
                 <div key={folder.path} className="gallery-folder-row">
                   <button
                     type="button"
-                    className={`gallery-filter-button ${
-                      !selectedTag && selectedFolderPath === folder.path ? "is-active" : ""
-                    }`}
+                    className={`gallery-filter-button ${selectedFolderPath === folder.path ? "is-active" : ""}`}
                     title={folder.path}
                     style={{ paddingLeft: `${12 + folder.depth * 18}px` }}
-                    onClick={() => {
-                      onSelectTag("");
-                      onSelectFolder(folder.path);
-                    }}
+                    onClick={() => onSelectFolder(folder.path)}
                   >
                     <ChevronRight size={14} strokeWidth={1.8} className="gallery-folder-chevron" />
                     <Folder size={15} strokeWidth={1.8} />
@@ -452,53 +499,12 @@ export function GalleryWorkspace({
             </div>
             </div>
 
-            {tagItems.length ? (
-              <div className="gallery-tags-panel">
-                <button
-                  type="button"
-                  className="gallery-tags-toggle"
-                  onClick={() => setTagsCollapsed((current) => !current)}
-                >
-                  <span className="section-label">{messages.galleryTagsLabel}</span>
-                  <ChevronRight
-                    size={14}
-                    strokeWidth={1.8}
-                    className={`gallery-tags-toggle-icon ${tagsCollapsed ? "" : "is-open"}`}
-                  />
-                </button>
-
-                {!tagsCollapsed ? (
-                  <div className="gallery-tags-list">
-                    {tagItems.map(({ tag, count }) => (
-                      <button
-                        key={tag}
-                        type="button"
-                        className={`gallery-tag-filter ${selectedTag === tag ? "is-active" : ""}`}
-                        title={tag}
-                        onClick={() => {
-                          onSelectTag(tag);
-                          onSelectFolder("");
-                        }}
-                      >
-                        <Tag size={13} strokeWidth={1.8} />
-                        <span>{tag}</span>
-                        <span className="gallery-filter-count">{count}</span>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
             <div className="gallery-trash-dock">
               <button
                 type="button"
                 className={`gallery-filter-button gallery-trash-button ${selectedFolderPath === "trash" ? "is-active" : ""}`}
                 title={messages.trashLabel}
-                onClick={() => {
-                  onSelectTag("");
-                  onSelectFolder("trash");
-                }}
+                onClick={() => onSelectFolder("trash")}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   const nextPosition = positionContextMenu(event.clientX, event.clientY, 180, 52);
@@ -533,9 +539,7 @@ export function GalleryWorkspace({
               onChange={(event) => onSearchTextChange(event.target.value)}
             />
             <span className="meta-pill">
-              {selectedTag
-                ? messages.galleryTagResultTitle.replace("{tag}", selectedTag)
-                : selectedFolderPath || messages.galleryAllImagesLabel}
+              {selectedFolderPath || messages.galleryAllImagesLabel}
             </span>
             <span className="meta-pill">
               {messages.galleryResultCountLabel.replace("{count}", String(images.length))}
@@ -611,19 +615,10 @@ export function GalleryWorkspace({
 
                       <div className="gallery-detail-meta">
                         <span className="meta-pill">{formatFileSize(activeImage.fileSize)}</span>
-                        <span className="meta-pill">{formatTimestamp(activeImage.updatedAt)}</span>
+                        {activeImage.height && activeImage.width ? (
+                          <span className="meta-pill">{`${activeImage.height} x ${activeImage.width}`}</span>
+                        ) : null}
                       </div>
-
-                      <label className="settings-field">
-                        <span>{messages.galleryTagsEditorLabel}</span>
-                        <input
-                          type="text"
-                          value={draftTags}
-                          disabled={activeImage.isTrashed}
-                          onChange={(event) => setDraftTags(event.target.value)}
-                          placeholder={messages.galleryTagsEditorPlaceholder}
-                        />
-                      </label>
 
                       <label className="settings-field">
                         <span>{messages.galleryNoteLabel}</span>
@@ -632,6 +627,13 @@ export function GalleryWorkspace({
                           value={draftNote}
                           disabled={activeImage.isTrashed}
                           onChange={(event) => setDraftNote(event.target.value)}
+                          onBlur={() => void saveNote()}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void saveNote();
+                            }
+                          }}
                           placeholder={messages.galleryNotePlaceholder}
                         />
                       </label>
@@ -659,9 +661,6 @@ export function GalleryWorkspace({
                       <div className="gallery-detail-actions">
                         {!activeImage.isTrashed ? (
                           <>
-                            <button type="button" className="soft-button" onClick={() => void saveMeta()}>
-                              {messages.saveButton}
-                            </button>
                             <button
                               type="button"
                               className="soft-button"
@@ -720,7 +719,7 @@ export function GalleryWorkspace({
                   </div>
                 </div>
               ) : (
-                <div className="gallery-grid-scroll" ref={gridScrollRef}>
+                <div className="gallery-grid-scroll">
                   <div className="gallery-grid">
                     {visibleImages.map((image) => (
                       <button
@@ -731,30 +730,77 @@ export function GalleryWorkspace({
                         onClick={() => onSelectImage(image.id)}
                       >
                         <div className="gallery-card-thumb">
-                          <img src={buildAssetUrl(image.absolutePath)} alt={image.fileName} loading="lazy" />
-                        </div>
-                        <div className="gallery-card-body">
-                          <strong>{image.fileName}</strong>
-                          <span>{image.folderPath || messages.galleryRootFolderLabel}</span>
-                          <div className="gallery-card-tags">
-                            {image.tags.slice(0, 3).map((tag) => (
-                              <span key={tag} className="gallery-inline-tag">
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
+                          <img
+                            src={imagesSuspended ? undefined : buildAssetUrl(image.absolutePath)}
+                            alt={image.fileName}
+                            loading="lazy"
+                          />
                         </div>
                       </button>
                     ))}
                   </div>
-
-                  {visibleCount < images.length ? (
-                    <div ref={gridSentinelRef} className="gallery-grid-sentinel" />
-                  ) : null}
                 </div>
               )
             ) : null}
           </div>
+
+          {!booting && images.length ? (
+            <div className="gallery-pagination">
+              <button
+                type="button"
+                className="soft-button"
+                disabled={safeCurrentPage <= 1}
+                onClick={() => setCurrentPage((current) => Math.max(current - 1, 1))}
+              >
+                {"<"}
+              </button>
+              {pageNumbers.map((page, index) => {
+                const previous = pageNumbers[index - 1];
+                return (
+                  <div key={page} className="gallery-pagination-group">
+                    {index > 0 && previous && page - previous > 1 ? (
+                      <span className="gallery-pagination-ellipsis">...</span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className={`soft-button ${page === safeCurrentPage ? "is-active" : ""}`}
+                      onClick={() => setCurrentPage(page)}
+                    >
+                      {page}
+                    </button>
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                className="soft-button"
+                disabled={safeCurrentPage >= totalPages}
+                onClick={() => setCurrentPage((current) => Math.min(current + 1, totalPages))}
+              >
+                {">"}
+              </button>
+              <select value={pageSize} onChange={(event) => setPageSize(Number(event.target.value) || 12)}>
+                <option value={12}>12 / page</option>
+                <option value={20}>20 / page</option>
+                <option value={40}>40 / page</option>
+              </select>
+              <label className="gallery-pagination-goto">
+                <span>Go to</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={totalPages}
+                  value={gotoPageInput}
+                  onChange={(event) => setGotoPageInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      submitGotoPage();
+                    }
+                  }}
+                />
+              </label>
+            </div>
+          ) : null}
         </section>
       </div>
 
@@ -810,6 +856,30 @@ export function GalleryWorkspace({
                 .replace("{count}", String(pendingImports.length))
                 .replace("{folder}", selectedFolderPath || messages.galleryRootFolderLabel)}
             </p>
+
+            {pendingImportSource === "folder" ? (
+              <div className="settings-field">
+                <span>{messages.galleryImportModeLabel}</span>
+                <label className="settings-toggle">
+                  <input
+                    type="radio"
+                    name="gallery-import-mode"
+                    checked={folderImportMode === "preserve"}
+                    onChange={() => setFolderImportMode("preserve")}
+                  />
+                  <span>{messages.galleryImportModePreserve}</span>
+                </label>
+                <label className="settings-toggle">
+                  <input
+                    type="radio"
+                    name="gallery-import-mode"
+                    checked={folderImportMode === "flatten"}
+                    onChange={() => setFolderImportMode("flatten")}
+                  />
+                  <span>{messages.galleryImportModeFlatten}</span>
+                </label>
+              </div>
+            ) : null}
 
             <div className="gallery-import-list">
               {pendingImports.slice(0, 12).map((item) => (

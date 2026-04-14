@@ -20,6 +20,7 @@ import { resolveMessages } from "./i18n";
 import type {
   AppSettings,
   BootstrapPayload,
+  GalleryFolderIndex,
   GalleryBootstrapPayload,
   GalleryImageEntry,
   GalleryWorkspacePayload,
@@ -45,6 +46,10 @@ function App() {
     colorPresets: ["#ef4444", "#eab308", "#3b82f6", "#22c55e"],
     colorPresetCount: 4,
     closeBehavior: "quit",
+    httpProxy: "",
+    httpsProxy: "",
+    allProxy: "",
+    noProxy: "",
   });
   const [vaultPath, setVaultPath] = useState("");
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -59,9 +64,7 @@ function App() {
   const [galleryImagesRootPath, setGalleryImagesRootPath] = useState("");
   const [galleryImages, setGalleryImages] = useState<GalleryImageEntry[]>([]);
   const [galleryFolders, setGalleryFolders] = useState<string[]>([]);
-  const [galleryTags, setGalleryTags] = useState<string[]>([]);
   const [selectedGalleryFolderPath, setSelectedGalleryFolderPath] = useState("");
-  const [selectedGalleryTag, setSelectedGalleryTag] = useState("");
   const [selectedGalleryImageId, setSelectedGalleryImageId] = useState("");
   const [galleryPreviewOpen, setGalleryPreviewOpen] = useState(false);
   const [gallerySearchText, setGallerySearchText] = useState("");
@@ -180,16 +183,13 @@ function App() {
     const query = deferredGallerySearch.trim().toLowerCase();
     return galleryImages.filter((image) => {
       if (selectedGalleryFolderPath === "trash") {
-        if (!image.isTrashed) {
-          return false;
-        }
-      } else if (image.isTrashed) {
+        return image.isTrashed && [image.fileName, image.folderPath, image.note]
+          .some((value) => value.toLowerCase().includes(query));
+      }
+      if (image.isTrashed) {
         return false;
       }
-      if (selectedGalleryTag && !image.tags.some((tag) => tag.toLowerCase() === selectedGalleryTag.toLowerCase())) {
-        return false;
-      }
-      if (!selectedGalleryTag && selectedGalleryFolderPath && selectedGalleryFolderPath !== "trash") {
+      if (selectedGalleryFolderPath) {
         if (
           image.folderPath !== selectedGalleryFolderPath &&
           !image.folderPath.startsWith(`${selectedGalleryFolderPath}/`)
@@ -198,10 +198,10 @@ function App() {
         }
       }
       if (!query) return true;
-      return [image.fileName, image.folderPath, image.tags.join(" ")]
+      return [image.fileName, image.folderPath, image.note]
         .some((value) => value.toLowerCase().includes(query));
     });
-  }, [deferredGallerySearch, galleryImages, selectedGalleryFolderPath, selectedGalleryTag]);
+  }, [deferredGallerySearch, galleryImages, selectedGalleryFolderPath]);
 
   useEffect(() => {
     activeNoteRef.current = activeNote;
@@ -259,7 +259,6 @@ function App() {
     const payload = await invoke<GalleryWorkspacePayload>("list_gallery_workspace");
     setGalleryImages(payload.images);
     setGalleryFolders(payload.folders);
-    setGalleryTags(payload.tags);
     return payload;
   }
 
@@ -278,7 +277,6 @@ function App() {
       setGalleryImagesRootPath(galleryPayload.imagesRootPath);
       setGalleryImages(galleryPayload.images);
       setGalleryFolders(galleryPayload.folders);
-      setGalleryTags(galleryPayload.tags);
       const firstNote = notesPayload.notes.find((note) => !note.isDraft);
       if (firstNote) {
         await openNote(firstNote.id);
@@ -723,16 +721,12 @@ function App() {
         const imported = await invoke<GalleryImageEntry>("import_gallery_file", {
           input: {
             fileName: item.file.name,
-            folderPath:
-              selectedGalleryTag || selectedGalleryFolderPath === "trash" ? "" : selectedGalleryFolderPath,
+            folderPath: selectedGalleryFolderPath === "trash" ? "" : selectedGalleryFolderPath,
             relativeParentPath: item.relativeParentPath,
             bytes,
           },
         });
         lastImportedId = imported.id;
-      }
-      if (selectedGalleryTag) {
-        setSelectedGalleryTag("");
       }
       await refreshGalleryWorkspace();
       if (lastImportedId) {
@@ -747,13 +741,24 @@ function App() {
     }
   }
 
-  async function updateGalleryImageMeta(id: string, tags: string[], note: string) {
+  async function readGalleryFolderIndex(folderPath: string) {
     try {
-      const updated = await invoke<GalleryImageEntry>("update_gallery_image_meta", {
-        input: { id, tags, note },
-      });
-      setGalleryImages((current) => current.map((image) => (image.id === id ? updated : image)));
-      await refreshGalleryWorkspace();
+      return await invoke<GalleryFolderIndex>("read_folder_index", { folderPath });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGalleryErrorMessage(mapGalleryErrorMessage(message));
+      return { version: 1, images: {} };
+    }
+  }
+
+  async function writeGalleryImageNote(folderPath: string, fileName: string, note: string) {
+    try {
+      await invoke<GalleryFolderIndex>("write_image_note", { folderPath, fileName, note });
+      setGalleryImages((current) =>
+        current.map((image) =>
+          image.folderPath === folderPath && image.fileName === fileName ? { ...image, note } : image,
+        ),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setGalleryErrorMessage(mapGalleryErrorMessage(message));
@@ -777,7 +782,6 @@ function App() {
     try {
       const nextImages = await invoke<GalleryImageEntry[]>("trash_gallery_image", { id });
       setGalleryImages(nextImages);
-      setGalleryTags(Array.from(new Set(nextImages.flatMap((image) => image.tags))).sort());
       if (!nextImages.find((image) => image.id === selectedGalleryImageId)) {
         const next = nextImages.find((image) => !image.isTrashed) ?? nextImages[0];
         setSelectedGalleryImageId(next?.id ?? "");
@@ -797,7 +801,6 @@ function App() {
       const restored = await invoke<GalleryImageEntry>("restore_gallery_image", { id });
       await refreshGalleryWorkspace();
       setSelectedGalleryFolderPath("");
-      setSelectedGalleryTag("");
       setSelectedGalleryImageId(restored.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1067,22 +1070,11 @@ function App() {
       allImages={galleryImages}
       images={filteredGalleryImages}
       folders={galleryFolders}
-      tags={galleryTags}
       selectedFolderPath={selectedGalleryFolderPath}
-      selectedTag={selectedGalleryTag}
       selectedImageId={selectedGalleryImageId}
       previewOpen={galleryPreviewOpen}
       importing={galleryImporting}
-      onSelectFolder={(folderPath) => {
-        setSelectedGalleryFolderPath(folderPath);
-        setSelectedGalleryTag("");
-      }}
-      onSelectTag={(tag) => {
-        setSelectedGalleryTag(tag);
-        if (tag) {
-          setSelectedGalleryFolderPath("");
-        }
-      }}
+      onSelectFolder={setSelectedGalleryFolderPath}
       onSelectImage={(imageId) => {
         setSelectedGalleryImageId(imageId);
         setGalleryPreviewOpen(true);
@@ -1092,7 +1084,8 @@ function App() {
       onRenameFolder={(fromPath, toPath) => void renameImageFolder(fromPath, toPath)}
       onDeleteFolder={(folderPath) => void deleteImageFolder(folderPath)}
       onImportFiles={importGalleryFiles}
-      onUpdateImageMeta={updateGalleryImageMeta}
+      onReadFolderIndex={readGalleryFolderIndex}
+      onWriteImageNote={writeGalleryImageNote}
       onMoveImage={moveGalleryImage}
       onDeleteImage={deleteGalleryImage}
       onRestoreImage={restoreGalleryImage}
@@ -1128,12 +1121,20 @@ function App() {
             language={settings.language}
             showNoteTime={settings.showNoteTime}
             closeBehavior={settings.closeBehavior}
+            httpProxy={settings.httpProxy}
+            httpsProxy={settings.httpsProxy}
+            allProxy={settings.allProxy}
+            noProxy={settings.noProxy}
             vaultPath={activeModule === "gallery" ? galleryImagesRootPath || vaultPath : vaultPath}
             colorPresets={settings.colorPresets}
             colorPresetCount={settings.colorPresetCount}
             onLanguageChange={(language) => void updateSettings({ ...settings, language })}
             onShowNoteTimeChange={(showNoteTime) => void updateSettings({ ...settings, showNoteTime })}
             onCloseBehaviorChange={(closeBehavior) => void updateSettings({ ...settings, closeBehavior })}
+            onHttpProxyChange={(httpProxy) => void updateSettings({ ...settings, httpProxy })}
+            onHttpsProxyChange={(httpsProxy) => void updateSettings({ ...settings, httpsProxy })}
+            onAllProxyChange={(allProxy) => void updateSettings({ ...settings, allProxy })}
+            onNoProxyChange={(noProxy) => void updateSettings({ ...settings, noProxy })}
             onColorPresetsChange={(colorPresets) => void updateSettings({ ...settings, colorPresets })}
             onColorPresetCountChange={(colorPresetCount) =>
               void updateSettings({ ...settings, colorPresetCount })

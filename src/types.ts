@@ -43,6 +43,10 @@ export type AppSettings = {
   colorPresets: string[];
   colorPresetCount: number;
   closeBehavior: "quit" | "tray";
+  httpProxy: string;
+  httpsProxy: string;
+  allProxy: string;
+  noProxy: string;
 };
 
 export type GalleryImageEntry = {
@@ -53,22 +57,26 @@ export type GalleryImageEntry = {
   absolutePath: string;
   fileSize: number;
   updatedAt: number;
-  tags: string[];
   note: string;
+  width: number | null;
+  height: number | null;
   isTrashed: boolean;
   originalFolderPath: string | null;
   deletedAt: number | null;
+};
+
+export type GalleryFolderIndex = {
+  version: number;
+  images: Record<string, { note: string }>;
 };
 
 export type GalleryBootstrapPayload = {
   imagesRootPath: string;
   images: GalleryImageEntry[];
   folders: string[];
-  tags: string[];
 };
 
 export type GalleryWorkspacePayload = {
   images: GalleryImageEntry[];
   folders: string[];
-  tags: string[];
 };
