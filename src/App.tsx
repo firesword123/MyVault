@@ -1,9 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
-import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { listen } from "@tauri-apps/api/event";
 import {
   KeyboardEvent,
   startTransition,
@@ -13,36 +12,20 @@ import {
   useRef,
   useState,
 } from "react";
-import { GalleryWorkspace } from "./components/GalleryWorkspace";
 import { EditorWorkspace, NotesListPanel } from "./components/NotesWorkspace";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShellFrame } from "./components/ShellFrame";
 import { resolveMessages } from "./i18n";
-import type {
-  AppSettings,
-  BootstrapPayload,
-  GalleryFolderIndex,
-  GalleryBootstrapPayload,
-  GalleryImageEntry,
-  ImportGalleryProgressPayload,
-  ImportGalleryResult,
-  GalleryWorkspacePayload,
-  NoteDetail,
-  NoteSummary,
-  WorkspacePayload,
-} from "./types";
+import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, WorkspacePayload } from "./types";
 import { appUiSpec } from "./ui-spec";
 import { noteSignature, previewText } from "./utils";
 import "./App.css";
-
-type ModuleId = "notes" | "gallery";
 
 function normalizeFolderInput(folderPath: string) {
   return folderPath.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
 function App() {
-  const [activeModule, setActiveModule] = useState<ModuleId>("notes");
   const [settings, setSettings] = useState<AppSettings>({
     language: "zh-CN",
     showNoteTime: false,
@@ -53,6 +36,10 @@ function App() {
     httpsProxy: "",
     allProxy: "",
     noProxy: "",
+    notesState: {
+      selectedNoteId: "",
+    },
+    persistentModules: [],
   });
   const [vaultPath, setVaultPath] = useState("");
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -64,19 +51,6 @@ function App() {
   const [noteErrorMessage, setNoteErrorMessage] = useState("");
   const [draftTargetFolders, setDraftTargetFolders] = useState<Record<string, string>>({});
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
-  const [galleryImagesRootPath, setGalleryImagesRootPath] = useState("");
-  const [galleryImages, setGalleryImages] = useState<GalleryImageEntry[]>([]);
-  const [galleryFolders, setGalleryFolders] = useState<string[]>([]);
-  const [selectedGalleryFolderPath, setSelectedGalleryFolderPath] = useState("");
-  const [selectedGalleryImageId, setSelectedGalleryImageId] = useState("");
-  const [galleryPreviewOpen, setGalleryPreviewOpen] = useState(false);
-  const [gallerySearchText, setGallerySearchText] = useState("");
-  const [galleryBooting, setGalleryBooting] = useState(true);
-  const [galleryImporting, setGalleryImporting] = useState(false);
-  const [galleryImportProgress, setGalleryImportProgress] = useState<ImportGalleryProgressPayload | null>(null);
-  const [galleryErrorMessage, setGalleryErrorMessage] = useState("");
-  const [galleryCurrentPage, setGalleryCurrentPage] = useState(1);
-  const [galleryPageSize, setGalleryPageSize] = useState(12);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(290);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
@@ -91,30 +65,12 @@ function App() {
   const autosaveTimer = useRef<number | null>(null);
 
   const deferredSearch = useDeferredValue(searchText);
-  const deferredGallerySearch = useDeferredValue(gallerySearchText);
   const messages = resolveMessages(settings.language);
   const activeFolderPath = activeNote?.folderPath ?? "";
   const draftNotes = useMemo(
     () => notes.filter((note) => note.isDraft).sort((left, right) => right.updatedAt - left.updatedAt),
     [notes],
   );
-
-  useEffect(() => {
-    if (activeModule !== "gallery") {
-      setGalleryPreviewOpen(false);
-      setSelectedGalleryImageId("");
-    }
-  }, [activeModule]);
-
-  useEffect(() => {
-    let dispose: (() => void) | undefined;
-    void listen<ImportGalleryProgressPayload>("gallery:import-progress", (event) => {
-      setGalleryImportProgress(event.payload);
-    }).then((unlisten) => {
-      dispose = unlisten;
-    });
-    return () => dispose?.();
-  }, []);
 
   function isFolderPathWithin(folderPath: string, rootFolder: string) {
     return folderPath === rootFolder || folderPath.startsWith(`${rootFolder}/`);
@@ -156,27 +112,6 @@ function App() {
     }
   }
 
-  function mapGalleryErrorMessage(message: string) {
-    switch (message) {
-      case "only empty gallery folders can be deleted":
-        return messages.errorGalleryFolderDeleteNotEmpty;
-      case "gallery folder not found":
-        return messages.errorGalleryFolderNotFound;
-      case "gallery folder already exists":
-        return messages.errorGalleryFolderExists;
-      case "invalid gallery folder path":
-        return messages.errorGalleryFolderInvalid;
-      case "unsupported image format":
-        return messages.errorGalleryImageFormat;
-      case "image not found":
-        return messages.errorGalleryImageNotFound;
-      case "target gallery folder is not allowed":
-        return messages.errorGalleryMoveTargetMissing;
-      default:
-        return message;
-    }
-  }
-
   function isProtectedFolderPath(folderPath: string) {
     return folderPath === "drafts" || folderPath === "inbox" || folderPath === "trash";
   }
@@ -201,30 +136,6 @@ function App() {
       return haystacks.some((value) => value.toLowerCase().includes(query));
     });
   }, [deferredSearch, notes]);
-
-  const filteredGalleryImages = useMemo(() => {
-    const query = deferredGallerySearch.trim().toLowerCase();
-    return galleryImages.filter((image) => {
-      if (selectedGalleryFolderPath === "trash") {
-        return image.isTrashed && [image.fileName, image.folderPath, image.note]
-          .some((value) => value.toLowerCase().includes(query));
-      }
-      if (image.isTrashed) {
-        return false;
-      }
-      if (selectedGalleryFolderPath) {
-        if (
-          image.folderPath !== selectedGalleryFolderPath &&
-          !image.folderPath.startsWith(`${selectedGalleryFolderPath}/`)
-        ) {
-          return false;
-        }
-      }
-      if (!query) return true;
-      return [image.fileName, image.folderPath, image.note]
-        .some((value) => value.toLowerCase().includes(query));
-    });
-  }, [deferredGallerySearch, galleryImages, selectedGalleryFolderPath]);
 
   useEffect(() => {
     activeNoteRef.current = activeNote;
@@ -278,46 +189,31 @@ function App() {
     return payload;
   }
 
-  async function refreshGalleryWorkspace() {
-    const payload = await invoke<GalleryWorkspacePayload>("list_gallery_workspace");
-    setGalleryImages(payload.images);
-    setGalleryFolders(payload.folders);
-    return payload;
-  }
-
   async function bootstrap() {
     try {
       const version = await getVersion();
-      const [notesPayload, galleryPayload] = await Promise.all([
-        invoke<BootstrapPayload>("bootstrap_app"),
-        invoke<GalleryBootstrapPayload>("bootstrap_gallery"),
-      ]);
       setAppVersion(`v${version}`);
+
+      const notesPayload = await invoke<BootstrapPayload>("bootstrap_app");
       setSettings(notesPayload.settings);
       setVaultPath(notesPayload.vaultPath);
       setNotes(notesPayload.notes);
       setFolders(notesPayload.folders);
-      setGalleryImagesRootPath(galleryPayload.imagesRootPath);
-      setGalleryImages(galleryPayload.images);
-      setGalleryFolders(galleryPayload.folders);
-      const firstNote = notesPayload.notes.find((note) => !note.isDraft);
+
+      const preferredNoteId = notesPayload.settings.notesState.selectedNoteId;
+      const preferredNote = notesPayload.notes.find((note) => note.id === preferredNoteId);
+      const firstNote = preferredNote ?? notesPayload.notes.find((note) => !note.isDraft) ?? notesPayload.notes[0];
       if (firstNote) {
         await openNote(firstNote.id);
       } else {
         setActiveNote(null);
         setSelectedNoteId("");
       }
-      const firstGalleryImage = galleryPayload.images.find((image) => !image.isTrashed) ?? galleryPayload.images[0];
-      if (firstGalleryImage) {
-        setSelectedGalleryImageId(firstGalleryImage.id);
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(message);
-      setGalleryErrorMessage(message);
     } finally {
       setNotesBooting(false);
-      setGalleryBooting(false);
     }
   }
 
@@ -675,197 +571,12 @@ function App() {
   function handleEditorKeyDown(event: KeyboardEvent<HTMLElement>) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      if (activeModule === "notes" && activeNote) {
-        if (activeNote.folderPath === "drafts") {
-          void saveDraftToFolder(draftTargetFolders[activeNote.id] ?? "inbox");
-        } else {
-          void persistNote(activeNote, "commit");
-        }
+      if (!activeNote) return;
+      if (activeNote.folderPath === "drafts") {
+        void saveDraftToFolder(draftTargetFolders[activeNote.id] ?? "inbox");
+      } else {
+        void persistNote(activeNote, "commit");
       }
-    }
-  }
-
-  async function createImageFolder(folderPath: string) {
-    const normalizedPath = normalizeFolderInput(folderPath);
-    if (!normalizedPath) return;
-    try {
-      const nextFolders = await invoke<string[]>("create_image_folder", {
-        input: { path: normalizedPath },
-      });
-      setGalleryFolders(nextFolders);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function renameImageFolder(fromPath: string, toPath: string) {
-    const normalizedPath = normalizeFolderInput(toPath);
-    if (!normalizedPath || normalizedPath === fromPath) return;
-    try {
-      const nextFolders = await invoke<string[]>("rename_image_folder", {
-        input: { fromPath, toPath: normalizedPath },
-      });
-      setGalleryFolders(nextFolders);
-      await refreshGalleryWorkspace();
-      if (selectedGalleryFolderPath === fromPath) {
-        setSelectedGalleryFolderPath(normalizedPath);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function deleteImageFolder(path: string) {
-    try {
-      if (!window.confirm(`${messages.deleteFolderConfirmTitle}\n\n${messages.deleteFolderConfirmBody}`)) {
-        return;
-      }
-      const nextFolders = await invoke<string[]>("delete_image_folder", { input: { path } });
-      setGalleryFolders(nextFolders);
-      if (selectedGalleryFolderPath === path) {
-        setSelectedGalleryFolderPath("");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function importGalleryPaths(sourcePaths: string[], preserveFolders: boolean) {
-    if (!sourcePaths.length) return;
-    setGalleryImporting(true);
-    setGalleryImportProgress({ total: sourcePaths.length, completed: 0, fileName: "" });
-    setGalleryErrorMessage("");
-    try {
-      const imported = await invoke<ImportGalleryResult>("import_gallery_paths", {
-        input: {
-          sourcePaths,
-          folderPath: selectedGalleryFolderPath === "trash" ? "" : selectedGalleryFolderPath,
-          preserveFolders,
-        },
-      });
-      await refreshGalleryWorkspace();
-      if (imported.lastImportedId) {
-        setSelectedGalleryImageId(imported.lastImportedId);
-        setGalleryPreviewOpen(true);
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    } finally {
-      setGalleryImporting(false);
-      setGalleryImportProgress(null);
-    }
-  }
-
-  async function readGalleryFolderIndex(folderPath: string) {
-    try {
-      return await invoke<GalleryFolderIndex>("read_folder_index", { folderPath });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-      return { version: 1, images: {} };
-    }
-  }
-
-  async function writeGalleryImageNote(folderPath: string, fileName: string, note: string) {
-    try {
-      await invoke<GalleryFolderIndex>("write_image_note", { folderPath, fileName, note });
-      setGalleryImages((current) =>
-        current.map((image) =>
-          image.folderPath === folderPath && image.fileName === fileName ? { ...image, note } : image,
-        ),
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function moveGalleryImage(id: string, folderPath: string) {
-    try {
-      const moved = await invoke<GalleryImageEntry>("move_gallery_image", {
-        input: { id, folderPath },
-      });
-      await refreshGalleryWorkspace();
-      setSelectedGalleryImageId(moved.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function deleteGalleryImage(id: string) {
-    try {
-      const nextImages = await invoke<GalleryImageEntry[]>("trash_gallery_image", { id });
-      setGalleryImages(nextImages);
-      if (!nextImages.find((image) => image.id === selectedGalleryImageId)) {
-        const next = nextImages.find((image) => !image.isTrashed) ?? nextImages[0];
-        setSelectedGalleryImageId(next?.id ?? "");
-        if (!next) {
-          setGalleryPreviewOpen(false);
-        }
-      }
-      await refreshGalleryWorkspace();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function restoreGalleryImage(id: string) {
-    try {
-      const restored = await invoke<GalleryImageEntry>("restore_gallery_image", { id });
-      await refreshGalleryWorkspace();
-      setSelectedGalleryFolderPath("");
-      setSelectedGalleryImageId(restored.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function deleteGalleryImagePermanently(id: string) {
-    try {
-      if (
-        !window.confirm(`${messages.galleryDeleteImageConfirmTitle}\n\n${messages.galleryDeleteImageConfirmBody}`)
-      ) {
-        return;
-      }
-      const nextImages = await invoke<GalleryImageEntry[]>("delete_gallery_image", { id });
-      await refreshGalleryWorkspace();
-      if (!nextImages.find((image) => image.id === selectedGalleryImageId)) {
-        const next = nextImages.find((image) => image.isTrashed) ?? nextImages.find((image) => !image.isTrashed) ?? nextImages[0];
-        setSelectedGalleryImageId(next?.id ?? "");
-        if (!next) {
-          setGalleryPreviewOpen(false);
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
-    }
-  }
-
-  async function emptyGalleryTrash() {
-    try {
-      if (!window.confirm(`${messages.emptyTrashConfirmTitle}\n\n${messages.emptyTrashConfirmBody}`)) {
-        return;
-      }
-      const nextImages = await invoke<GalleryImageEntry[]>("empty_gallery_trash");
-      await refreshGalleryWorkspace();
-      if (selectedGalleryFolderPath === "trash") {
-        const next = nextImages.find((image) => image.isTrashed);
-        setSelectedGalleryImageId(next?.id ?? "");
-        if (!next) {
-          setGalleryPreviewOpen(false);
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setGalleryErrorMessage(mapGalleryErrorMessage(message));
     }
   }
 
@@ -889,6 +600,17 @@ function App() {
       }
     };
   }, [activeNote]);
+
+  useEffect(() => {
+    if (notesBooting) return;
+    if (settings.notesState.selectedNoteId === selectedNoteId) return;
+    void updateSettings({
+      ...settings,
+      notesState: {
+        selectedNoteId,
+      },
+    });
+  }, [notesBooting, selectedNoteId]);
 
   useEffect(() => {
     const theme = appUiSpec.theme;
@@ -935,7 +657,7 @@ function App() {
     };
   }, []);
 
-  const notesModuleBody = (
+  const bodyContent = (
     <div
       className="module-body notes-module-body"
       style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}
@@ -1078,69 +800,20 @@ function App() {
     </div>
   );
 
-  const galleryModuleBody = (
-    <GalleryWorkspace
-      messages={messages}
-      sidebarWidth={sidebarWidth}
-      sidebarResizeActive={sidebarResizeActive}
-      booting={galleryBooting}
-      searchText={gallerySearchText}
-      onSearchTextChange={setGallerySearchText}
-      allImages={galleryImages}
-      images={filteredGalleryImages}
-      folders={galleryFolders}
-      selectedFolderPath={selectedGalleryFolderPath}
-      selectedImageId={selectedGalleryImageId}
-      previewOpen={galleryPreviewOpen}
-      importing={galleryImporting}
-      importProgress={galleryImportProgress}
-      currentPage={galleryCurrentPage}
-      pageSize={galleryPageSize}
-      onSelectFolder={setSelectedGalleryFolderPath}
-      onCurrentPageChange={setGalleryCurrentPage}
-      onPageSizeChange={setGalleryPageSize}
-      onSelectImage={(imageId) => {
-        setSelectedGalleryImageId(imageId);
-        setGalleryPreviewOpen(true);
-      }}
-      onClosePreview={() => setGalleryPreviewOpen(false)}
-      onCreateFolder={(folderPath) => void createImageFolder(folderPath)}
-      onRenameFolder={(fromPath, toPath) => void renameImageFolder(fromPath, toPath)}
-      onDeleteFolder={(folderPath) => void deleteImageFolder(folderPath)}
-      onImportPaths={importGalleryPaths}
-      onReadFolderIndex={readGalleryFolderIndex}
-      onWriteImageNote={writeGalleryImageNote}
-      onMoveImage={moveGalleryImage}
-      onDeleteImage={deleteGalleryImage}
-      onRestoreImage={restoreGalleryImage}
-      onDeleteImagePermanently={deleteGalleryImagePermanently}
-      onEmptyTrash={() => void emptyGalleryTrash()}
-      onRevealImage={(absolutePath) => void revealItemInDir(absolutePath)}
-      onOpenImageFolder={(absolutePath) => void openPath(absolutePath.replace(/[/\\][^/\\]+$/, ""))}
-      onStartSidebarResize={() => {
-        isResizingSidebar.current = true;
-        setSidebarResizeActive(true);
-      }}
-      errorMessage={galleryErrorMessage}
-    />
-  );
-
   return (
     <div className="app-shell">
       <ShellFrame
         spec={appUiSpec}
         messages={messages}
-        activeModule={activeModule}
-        bodyContent={activeModule === "notes" ? notesModuleBody : galleryModuleBody}
+        activeModule="notes"
+        bodyContent={bodyContent}
         settingsPanel={
           <SettingsPanel
             open={settingsOpen}
             messages={messages}
             version={appVersion}
             updateStatus={updateStatus}
-            updateActionLabel={
-              availableUpdate ? messages.updateInstallButton : messages.updateCheckButton
-            }
+            updateActionLabel={availableUpdate ? messages.updateInstallButton : messages.updateCheckButton}
             updateActionDisabled={updateBusy}
             language={settings.language}
             showNoteTime={settings.showNoteTime}
@@ -1149,7 +822,7 @@ function App() {
             httpsProxy={settings.httpsProxy}
             allProxy={settings.allProxy}
             noProxy={settings.noProxy}
-            vaultPath={activeModule === "gallery" ? galleryImagesRootPath || vaultPath : vaultPath}
+            vaultPath={vaultPath}
             colorPresets={settings.colorPresets}
             colorPresetCount={settings.colorPresetCount}
             onLanguageChange={(language) => void updateSettings({ ...settings, language })}
@@ -1160,18 +833,12 @@ function App() {
             onAllProxyChange={(allProxy) => void updateSettings({ ...settings, allProxy })}
             onNoProxyChange={(noProxy) => void updateSettings({ ...settings, noProxy })}
             onColorPresetsChange={(colorPresets) => void updateSettings({ ...settings, colorPresets })}
-            onColorPresetCountChange={(colorPresetCount) =>
-              void updateSettings({ ...settings, colorPresetCount })
-            }
+            onColorPresetCountChange={(colorPresetCount) => void updateSettings({ ...settings, colorPresetCount })}
             onUpdateAction={() => void handleUpdateAction()}
             onClose={() => setSettingsOpen(false)}
           />
         }
-        onSelectModule={(moduleId) => {
-          if (moduleId === "notes" || moduleId === "gallery") {
-            setActiveModule(moduleId);
-          }
-        }}
+        onSelectModule={() => {}}
         onOpenSettings={() => setSettingsOpen((current) => !current)}
       />
     </div>

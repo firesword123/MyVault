@@ -11,6 +11,8 @@ type ShellFrameProps = {
   settingsPanel: ReactNode;
   onSelectModule: (moduleId: string) => void;
   onOpenSettings: () => void;
+  onMinimize?: () => void;
+  onClose?: () => void;
 };
 
 export function ShellFrame({
@@ -21,6 +23,8 @@ export function ShellFrame({
   settingsPanel,
   onSelectModule,
   onOpenSettings,
+  onMinimize,
+  onClose,
 }: ShellFrameProps) {
   return (
     <div className="window-shell">
@@ -31,6 +35,8 @@ export function ShellFrame({
         activeModule={activeModule}
         onSelectModule={onSelectModule}
         onOpenSettings={onOpenSettings}
+        onMinimize={onMinimize}
+        onClose={onClose}
       />
 
       <div className="app-body">{bodyContent}</div>

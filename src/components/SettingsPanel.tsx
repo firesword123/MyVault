@@ -167,6 +167,7 @@ export function SettingsPanel({
 
         <label className="settings-field">
           <span>{messages.closeBehaviorLabel}</span>
+          <p className="settings-help-text">{messages.closeBehaviorHint}</p>
           <select
             value={closeBehavior}
             onChange={(event) => onCloseBehaviorChange(event.target.value as "quit" | "tray")}

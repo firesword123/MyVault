@@ -47,47 +47,8 @@ export type AppSettings = {
   httpsProxy: string;
   allProxy: string;
   noProxy: string;
-};
-
-export type GalleryImageEntry = {
-  id: string;
-  fileName: string;
-  relativePath: string;
-  folderPath: string;
-  absolutePath: string;
-  fileSize: number;
-  updatedAt: number;
-  note: string;
-  width: number | null;
-  height: number | null;
-  isTrashed: boolean;
-  originalFolderPath: string | null;
-  deletedAt: number | null;
-};
-
-export type GalleryFolderIndex = {
-  version: number;
-  images: Record<string, { note: string }>;
-};
-
-export type GalleryBootstrapPayload = {
-  imagesRootPath: string;
-  images: GalleryImageEntry[];
-  folders: string[];
-};
-
-export type GalleryWorkspacePayload = {
-  images: GalleryImageEntry[];
-  folders: string[];
-};
-
-export type ImportGalleryResult = {
-  importedCount: number;
-  lastImportedId: string | null;
-};
-
-export type ImportGalleryProgressPayload = {
-  total: number;
-  completed: number;
-  fileName: string;
+  notesState: {
+    selectedNoteId: string;
+  };
+  persistentModules: string[];
 };

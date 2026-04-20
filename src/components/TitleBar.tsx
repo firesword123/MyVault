@@ -10,6 +10,8 @@ type TitleBarProps = {
   activeModule: string;
   onSelectModule: (moduleId: string) => void;
   onOpenSettings: () => void;
+  onMinimize?: () => void;
+  onClose?: () => void;
 };
 
 export function TitleBar({
@@ -19,10 +21,11 @@ export function TitleBar({
   activeModule,
   onSelectModule,
   onOpenSettings,
+  onMinimize,
+  onClose,
 }: TitleBarProps) {
   const moduleLabels: Record<string, string> = {
     notes: messages.moduleNotesLabel,
-    gallery: messages.moduleGalleryLabel,
     private: messages.modulePrivateLabel,
   };
 
@@ -41,7 +44,7 @@ export function TitleBar({
             disabled={!module.enabled}
             onClick={() => onSelectModule(module.id)}
           >
-            {moduleLabels[module.id] ?? module.id}
+            <span>{moduleLabels[module.id] ?? module.id}</span>
           </button>
         ))}
       </nav>
@@ -59,7 +62,12 @@ export function TitleBar({
         <button type="button" aria-label={messages.settingsTitle} title={messages.settingsTitle} onClick={onOpenSettings}>
           <Settings size={16} strokeWidth={1.75} />
         </button>
-        <button type="button" aria-label="Minimize" title="Minimize" onClick={() => void invoke("minimize_window")}>
+        <button
+          type="button"
+          aria-label="Minimize"
+          title="Minimize"
+          onClick={() => (onMinimize ? onMinimize() : void invoke("minimize_window"))}
+        >
           <Minus size={16} strokeWidth={1.75} />
         </button>
         <button
@@ -75,7 +83,7 @@ export function TitleBar({
           aria-label="Close"
           title="Close"
           className="is-close"
-          onClick={() => void invoke("close_window")}
+          onClick={() => (onClose ? onClose() : void invoke("close_window"))}
         >
           <X size={16} strokeWidth={1.75} />
         </button>

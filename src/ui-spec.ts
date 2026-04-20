@@ -37,7 +37,6 @@ export type AppUiSpec = {
 export const appUiSpec: AppUiSpec = {
   modules: [
     { id: "notes", enabled: true },
-    { id: "gallery", enabled: true },
     { id: "private", enabled: false },
   ],
   theme: {

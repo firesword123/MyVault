@@ -1,5 +1,3 @@
-mod gallery;
-
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -131,6 +129,16 @@ struct AppSettings {
     all_proxy: String,
     #[serde(default)]
     no_proxy: String,
+    #[serde(default = "default_notes_state")]
+    notes_state: NotesWindowState,
+    #[serde(default)]
+    persistent_modules: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct NotesWindowState {
+    selected_note_id: String,
 }
 
 fn default_language() -> String {
@@ -158,6 +166,12 @@ fn default_close_behavior() -> String {
     "quit".to_string()
 }
 
+fn default_notes_state() -> NotesWindowState {
+    NotesWindowState {
+        selected_note_id: String::new(),
+    }
+}
+
 fn normalized_color_presets() -> Vec<String> {
     let mut presets = default_color_presets();
     presets.resize(default_color_preset_count(), "#3b82f6".to_string());
@@ -175,6 +189,8 @@ fn default_settings() -> AppSettings {
         https_proxy: String::new(),
         all_proxy: String::new(),
         no_proxy: String::new(),
+        notes_state: default_notes_state(),
+        persistent_modules: Vec::new(),
     }
 }
 
@@ -420,6 +436,11 @@ fn close_behavior(app: &AppHandle) -> String {
 }
 
 fn handle_close_action(window: &Window) -> Result<(), String> {
+    if window.label() != "main" {
+        return window
+            .close()
+            .map_err(|error| format!("failed to close window: {error}"));
+    }
     let app = window.app_handle();
     if close_behavior(&app) == "tray" {
         hide_window_to_tray(window)
@@ -1210,7 +1231,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if close_behavior(&window.app_handle()) == "tray" {
+                if window.label() == "main" && close_behavior(&window.app_handle()) == "tray" {
                     api.prevent_close();
                     let _ = hide_window_to_tray(window);
                 }
@@ -1218,34 +1239,21 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap_app,
-            gallery::bootstrap_gallery,
             get_settings,
             update_settings,
             list_notes,
             list_workspace,
-            gallery::list_gallery_workspace,
             load_note,
             create_note,
             create_folder,
             rename_folder,
             delete_folder,
-            gallery::create_image_folder,
-            gallery::rename_image_folder,
-            gallery::delete_image_folder,
             save_note,
             trash_note,
             restore_note,
             delete_note,
             empty_trash,
             move_note,
-            gallery::read_folder_index,
-            gallery::write_image_note,
-            gallery::import_gallery_paths,
-            gallery::move_gallery_image,
-            gallery::trash_gallery_image,
-            gallery::restore_gallery_image,
-            gallery::delete_gallery_image,
-            gallery::empty_gallery_trash,
             minimize_window,
             toggle_maximize_window,
             close_window,
