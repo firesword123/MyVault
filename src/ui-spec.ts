@@ -37,7 +37,7 @@ export type AppUiSpec = {
 export const appUiSpec: AppUiSpec = {
   modules: [
     { id: "notes", enabled: true },
-    { id: "private", enabled: false },
+    { id: "asmr", enabled: true },
   ],
   theme: {
     bodyFont: '"Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif',

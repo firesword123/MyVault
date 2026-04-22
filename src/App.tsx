@@ -12,20 +12,26 @@ import {
   useRef,
   useState,
 } from "react";
+import { AsmrWorkspace } from "./components/AsmrWorkspace";
 import { EditorWorkspace, NotesListPanel } from "./components/NotesWorkspace";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShellFrame } from "./components/ShellFrame";
 import { resolveMessages } from "./i18n";
-import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, WorkspacePayload } from "./types";
+import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, ResourceUsage, WorkspacePayload } from "./types";
 import { appUiSpec } from "./ui-spec";
 import { noteSignature, previewText } from "./utils";
-import "./App.css";
+import "./styles/global.css";
+import "./styles/notes.css";
+import "./styles/asmr.css";
+
+type ModuleId = "notes" | "asmr";
 
 function normalizeFolderInput(folderPath: string) {
   return folderPath.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
 function App() {
+  const [activeModule, setActiveModule] = useState<ModuleId>("notes");
   const [settings, setSettings] = useState<AppSettings>({
     language: "zh-CN",
     showNoteTime: false,
@@ -52,6 +58,7 @@ function App() {
   const [draftTargetFolders, setDraftTargetFolders] = useState<Record<string, string>>({});
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [resourceUsage, setResourceUsage] = useState<ResourceUsage | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(290);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
   const [appVersion, setAppVersion] = useState("Resolving...");
@@ -604,13 +611,36 @@ function App() {
   useEffect(() => {
     if (notesBooting) return;
     if (settings.notesState.selectedNoteId === selectedNoteId) return;
-    void updateSettings({
-      ...settings,
-      notesState: {
+    void invoke<AppSettings>("update_notes_state", {
+      input: {
         selectedNoteId,
       },
+    }).then(setSettings, (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setNoteErrorMessage(mapNoteErrorMessage(message));
     });
   }, [notesBooting, selectedNoteId]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let alive = true;
+    const refresh = () => {
+      void invoke<ResourceUsage>("get_resource_usage").then(
+        (usage) => {
+          if (alive) setResourceUsage(usage);
+        },
+        () => {
+          if (alive) setResourceUsage(null);
+        },
+      );
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(interval);
+    };
+  }, [settingsOpen]);
 
   useEffect(() => {
     const theme = appUiSpec.theme;
@@ -657,7 +687,7 @@ function App() {
     };
   }, []);
 
-  const bodyContent = (
+  const notesBodyContent = (
     <div
       className="module-body notes-module-body"
       style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}
@@ -800,12 +830,14 @@ function App() {
     </div>
   );
 
+  const bodyContent = activeModule === "asmr" ? <AsmrWorkspace /> : notesBodyContent;
+
   return (
     <div className="app-shell">
       <ShellFrame
         spec={appUiSpec}
         messages={messages}
-        activeModule="notes"
+        activeModule={activeModule}
         bodyContent={bodyContent}
         settingsPanel={
           <SettingsPanel
@@ -825,6 +857,7 @@ function App() {
             vaultPath={vaultPath}
             colorPresets={settings.colorPresets}
             colorPresetCount={settings.colorPresetCount}
+            resourceUsage={resourceUsage}
             onLanguageChange={(language) => void updateSettings({ ...settings, language })}
             onShowNoteTimeChange={(showNoteTime) => void updateSettings({ ...settings, showNoteTime })}
             onCloseBehaviorChange={(closeBehavior) => void updateSettings({ ...settings, closeBehavior })}
@@ -838,7 +871,11 @@ function App() {
             onClose={() => setSettingsOpen(false)}
           />
         }
-        onSelectModule={() => {}}
+        onSelectModule={(moduleId) => {
+          if (moduleId === "notes" || moduleId === "asmr") {
+            setActiveModule(moduleId);
+          }
+        }}
         onOpenSettings={() => setSettingsOpen((current) => !current)}
       />
     </div>

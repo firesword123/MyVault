@@ -26,7 +26,7 @@ export function TitleBar({
 }: TitleBarProps) {
   const moduleLabels: Record<string, string> = {
     notes: messages.moduleNotesLabel,
-    private: messages.modulePrivateLabel,
+    asmr: messages.moduleAsmrLabel,
   };
 
   return (

@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import type { LocaleMessages } from "../i18n";
+import type { ResourceUsage } from "../types";
 
 type SettingsPanelProps = {
   open: boolean;
@@ -18,6 +19,7 @@ type SettingsPanelProps = {
   vaultPath: string;
   colorPresets: string[];
   colorPresetCount: number;
+  resourceUsage: ResourceUsage | null;
   onLanguageChange: (language: string) => void;
   onShowNoteTimeChange: (checked: boolean) => void;
   onCloseBehaviorChange: (behavior: "quit" | "tray") => void;
@@ -48,6 +50,7 @@ export function SettingsPanel({
   vaultPath,
   colorPresets,
   colorPresetCount,
+  resourceUsage,
   onLanguageChange,
   onShowNoteTimeChange,
   onCloseBehaviorChange,
@@ -66,6 +69,8 @@ export function SettingsPanel({
     { length: colorPresetCount },
     (_, index) => colorPresets[index] || "#3b82f6",
   );
+  const formatMemory = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  const formatCpu = (value: number) => `${value.toFixed(1)}%`;
 
   return (
     <aside className="settings-panel">
@@ -80,6 +85,24 @@ export function SettingsPanel({
       </div>
 
       <div className="settings-panel-body">
+        <div className="settings-resource-card">
+          <span className="section-label">资源占用</span>
+          {resourceUsage ? (
+            <>
+              <div>
+                <strong>{formatMemory(resourceUsage.totalMemoryBytes)}</strong>
+                <span>{formatCpu(resourceUsage.totalCpuPercent)}</span>
+              </div>
+              <small>
+                App {formatMemory(resourceUsage.appMemoryBytes)} / WebView{" "}
+                {formatMemory(resourceUsage.webviewMemoryBytes)} ({resourceUsage.webviewProcesses})
+              </small>
+            </>
+          ) : (
+            <small>等待采样...</small>
+          )}
+        </div>
+
         <label className="settings-field">
           <span>{messages.languageLabel}</span>
           <select value={language} onChange={(event) => onLanguageChange(event.target.value)}>
