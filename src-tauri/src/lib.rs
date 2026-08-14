@@ -1,6 +1,9 @@
-mod asmr;
 mod core;
+mod module_launcher;
+mod module_protocol;
 mod notes;
+mod player;
+mod storage;
 
 use crate::core::{
     apply_network_settings, default_close_behavior, ensure_vault_layout, load_settings,
@@ -10,7 +13,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, Window, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, Window, WindowEvent,
 };
 
 fn tray_icon_path() -> PathBuf {
@@ -138,7 +141,7 @@ fn start_window_dragging(window: Window) -> Result<(), String> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -150,6 +153,10 @@ pub fn run() {
         .setup(|app| {
             ensure_vault_layout(app.handle())
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            let module_manager = module_launcher::ModuleManager::new()
+                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+            app.manage(module_manager);
+            app.manage(player::PlayerState::default());
             let settings = load_settings(app.handle())
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
             apply_network_settings(&settings);
@@ -169,16 +176,12 @@ pub fn run() {
             core::get_resource_usage,
             core::update_settings,
             notes::update_notes_state,
-            asmr::bootstrap_asmr,
-            asmr::preview_asmr_import,
-            asmr::import_asmr_work,
-            asmr::update_asmr_work,
-            asmr::upsert_asmr_dictionary,
-            asmr::delete_asmr_dictionary,
-            asmr::list_asmr_folder,
-            asmr::update_asmr_playback,
-            asmr::set_asmr_cover,
-            asmr::read_asmr_text_file,
+            module_launcher::launch_asmr_module,
+            module_launcher::launch_gallery_module,
+            player::bootstrap_player,
+            player::clear_player_queue,
+            player::read_player_subtitle,
+            player::trim_player_memory,
             notes::list_notes,
             notes::list_workspace,
             notes::load_note,
@@ -190,6 +193,7 @@ pub fn run() {
             notes::trash_note,
             notes::restore_note,
             notes::delete_note,
+            notes::discard_draft_note,
             notes::empty_trash,
             notes::move_note,
             minimize_window,
@@ -197,6 +201,14 @@ pub fn run() {
             close_window,
             start_window_dragging
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if matches!(event, RunEvent::Exit) {
+            if let Some(manager) = app_handle.try_state::<module_launcher::ModuleManager>() {
+                manager.shutdown_all();
+            }
+        }
+    });
 }

@@ -12,6 +12,9 @@ type TitleBarProps = {
   onOpenSettings: () => void;
   onMinimize?: () => void;
   onClose?: () => void;
+  showSettings?: boolean;
+  showMemory?: boolean;
+  memoryBytes?: number | null;
 };
 
 export function TitleBar({
@@ -23,10 +26,15 @@ export function TitleBar({
   onOpenSettings,
   onMinimize,
   onClose,
+  showSettings = true,
+  showMemory = false,
+  memoryBytes = null,
 }: TitleBarProps) {
   const moduleLabels: Record<string, string> = {
     notes: messages.moduleNotesLabel,
     asmr: messages.moduleAsmrLabel,
+    gallery: messages.moduleGalleryLabel,
+    player: messages.modulePlayerLabel,
   };
 
   return (
@@ -56,12 +64,20 @@ export function TitleBar({
             void invoke("start_window_dragging");
           }
         }}
-      />
+      >
+        {showMemory ? (
+          <span className="titlebar-memory">
+            {messages.titlebarMemoryLabel} {memoryBytes === null ? "--" : `${(memoryBytes / 1024 / 1024).toFixed(0)} MB`}
+          </span>
+        ) : null}
+      </div>
 
       <div className="window-controls">
-        <button type="button" aria-label={messages.settingsTitle} title={messages.settingsTitle} onClick={onOpenSettings}>
-          <Settings size={16} strokeWidth={1.75} />
-        </button>
+        {showSettings ? (
+          <button type="button" aria-label={messages.settingsTitle} title={messages.settingsTitle} onClick={onOpenSettings}>
+            <Settings size={16} strokeWidth={1.75} />
+          </button>
+        ) : null}
         <button
           type="button"
           aria-label="Minimize"

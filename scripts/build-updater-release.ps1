@@ -28,7 +28,10 @@ $latestJsonPath = Join-Path $nsisDir "latest.json"
 $releaseTag = "v$version"
 
 try {
-  npm run tauri build
+  npm run tauri -- build --bundles nsis
+  if ($LASTEXITCODE -ne 0) {
+    throw "NSIS release build failed with exit code $LASTEXITCODE"
+  }
 
   if (-not (Test-Path $assetPath)) {
     throw "Missing NSIS installer at $assetPath"
@@ -36,6 +39,9 @@ try {
 
   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $password
   npm run tauri signer sign -- -f $resolvedKeyPath $assetPath
+  if ($LASTEXITCODE -ne 0) {
+    throw "Updater signing failed with exit code $LASTEXITCODE"
+  }
 
   if (-not (Test-Path $signaturePath)) {
     throw "Missing signature file at $signaturePath"

@@ -1,27 +1,24 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Building2,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
+  File,
   FileAudio2,
+  FileImage,
   FileText,
   Folder,
   Library,
-  LocateFixed,
   Mic2,
-  Pause,
   Play,
   Plus,
-  RotateCcw,
-  RotateCw,
   Search,
-  SkipBack,
-  SkipForward,
   Tags,
-  Volume2,
+  X,
 } from "lucide-react";
 import type {
   AsmrBootstrapPayload,
@@ -30,6 +27,7 @@ import type {
   AsmrFolderPayload,
   AsmrImportPreview,
   AsmrWork,
+  PlayerQueueRequest,
 } from "../types";
 
 type AsmrNavItem = {
@@ -58,15 +56,16 @@ type MetadataDraft = {
   note: string;
 };
 
-type PlayingTrack = {
-  workId: string;
-  item: AsmrFileItem;
-};
+type MetadataPickerKey = "tags" | "voiceActors";
+type StructuredMetadataMode = "skip" | "create";
 
-type SubtitleLine = {
-  start: number;
-  end: number;
-  text: string;
+type StructuredMetadataInput = {
+  title?: unknown;
+  circle?: unknown;
+  tags?: unknown;
+  voiceActors?: unknown;
+  voice_actors?: unknown;
+  note?: unknown;
 };
 
 const navItems: AsmrNavItem[] = [
@@ -79,14 +78,17 @@ const navItems: AsmrNavItem[] = [
 function FileIcon({ kind }: { kind: AsmrFileItem["kind"] }) {
   if (kind === "folder") return <Folder size={26} fill="currentColor" strokeWidth={1.75} />;
   if (kind === "subtitle") return <FileText size={25} strokeWidth={1.75} />;
-  return <FileAudio2 size={25} strokeWidth={1.75} />;
+  if (kind === "audio") return <FileAudio2 size={25} strokeWidth={1.75} />;
+  if (kind === "image") return <FileImage size={25} strokeWidth={1.75} />;
+  return <File size={25} strokeWidth={1.75} />;
 }
 
-function formatDuration(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds <= 0) return "00:00";
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.floor(seconds % 60);
-  return `${minutes.toString().padStart(2, "0")}:${rest.toString().padStart(2, "0")}`;
+function fileKindLabel(file: AsmrFileItem) {
+  if (file.kind === "folder") return "文件夹";
+  if (file.kind === "audio") return file.subtitlePath ? "音频 · 同名字幕已关联" : "音频";
+  if (file.kind === "subtitle") return "字幕";
+  if (file.kind === "image") return "图片";
+  return "文件";
 }
 
 function formatBytes(bytes: number) {
@@ -101,102 +103,7 @@ function parentFolderPath(path: string) {
   return index >= 0 ? normalized.slice(0, index) : "";
 }
 
-function subtitleRelativePath(audioItem: AsmrFileItem) {
-  if (!audioItem.subtitlePath) return null;
-  const normalized = audioItem.subtitlePath.replace(/\\/g, "/").replace(/^\/+/, "");
-  if (!normalized.includes(":/")) return normalized;
-  const folder = parentFolderPath(audioItem.relativePath);
-  const name = normalized.split("/").pop();
-  if (!name) return null;
-  return folder ? `${folder}/${name}` : name;
-}
-
-function parseSubtitleTime(value: string) {
-  const normalized = value.trim().replace(",", ".");
-  const parts = normalized.split(":");
-  if (parts.length === 2) {
-    const minutes = Number(parts[0]);
-    const seconds = Number(parts[1]);
-    return minutes * 60 + seconds;
-  }
-  if (parts.length === 3) {
-    const hours = Number(parts[0]);
-    const minutes = Number(parts[1]);
-    const seconds = Number(parts[2]);
-    return hours * 3600 + minutes * 60 + seconds;
-  }
-  return 0;
-}
-
-function parseSubtitles(raw: string): SubtitleLine[] {
-  const assLines = raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.toLowerCase().startsWith("dialogue:"))
-    .map((line) => {
-      const payload = line.slice(line.indexOf(":") + 1).trim();
-      const parts = payload.split(",");
-      if (parts.length < 10) return null;
-      const text = parts
-        .slice(9)
-        .join(",")
-        .replace(/\{[^}]*\}/g, "")
-        .replace(/\\N/g, "\n")
-        .replace(/\\h/g, " ")
-        .trim();
-      if (!text) return null;
-      return {
-        start: parseSubtitleTime(parts[1]),
-        end: parseSubtitleTime(parts[2]),
-        text,
-      };
-    })
-    .filter((line): line is SubtitleLine => Boolean(line));
-  if (assLines.length) return assLines.sort((left, right) => left.start - right.start);
-
-  const blocks = raw
-    .replace(/\r/g, "")
-    .split(/\n\s*\n/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-
-  const lines: SubtitleLine[] = [];
-  for (const block of blocks) {
-    const rows = block.split("\n").map((line) => line.trim()).filter(Boolean);
-    const timeIndex = rows.findIndex((line) => line.includes("-->"));
-    if (timeIndex < 0) continue;
-    const [startRaw, endRaw] = rows[timeIndex].split("-->").map((part) => part.trim().split(/\s+/)[0]);
-    const text = rows.slice(timeIndex + 1).join("\n").trim();
-    if (!text) continue;
-    lines.push({
-      start: parseSubtitleTime(startRaw),
-      end: parseSubtitleTime(endRaw),
-      text,
-    });
-  }
-
-  if (lines.length) return lines.sort((left, right) => left.start - right.start);
-
-  return raw
-    .replace(/\r/g, "")
-    .split("\n")
-    .map((line) => line.trim())
-    .map((line) => {
-      const match = line.match(/^\[(\d{1,2}:\d{2}(?:[.,]\d{1,3})?)\](.+)$/);
-      if (!match) return null;
-      const start = parseSubtitleTime(match[1]);
-      return { start, end: start + 4, text: match[2].trim() };
-    })
-    .filter((line): line is SubtitleLine => Boolean(line))
-    .sort((left, right) => left.start - right.start);
-}
-
 export function AsmrWorkspace() {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const subtitlePanelRef = useRef<HTMLDivElement | null>(null);
-  const activeSubtitleRef = useRef<HTMLButtonElement | null>(null);
-  const lastPlaybackSaveRef = useRef<{ key: string; positionMs: number }>({ key: "", positionMs: -1 });
   const [view, setView] = useState<"library" | "detail">("library");
   const [activeSection, setActiveSection] = useState<AsmrSection>("library");
   const [activeFilter, setActiveFilter] = useState<AsmrFilter | null>(null);
@@ -209,29 +116,21 @@ export function AsmrWorkspace() {
   const [selectedWorkId, setSelectedWorkId] = useState("");
   const [folderPath, setFolderPath] = useState("");
   const [folderItems, setFolderItems] = useState<AsmrFileItem[]>([]);
-  const [playingTrack, setPlayingTrack] = useState<PlayingTrack | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [audioPosition, setAudioPosition] = useState(0);
-  const [audioDuration, setAudioDuration] = useState(0);
-  const [volume, setVolume] = useState(0.72);
-  const [playerExpanded, setPlayerExpanded] = useState(false);
-  const [autoScrollSubtitles, setAutoScrollSubtitles] = useState(true);
-  const [subtitles, setSubtitles] = useState<SubtitleLine[]>([]);
-  const [subtitleError, setSubtitleError] = useState("");
+  const [selectedCoverPath, setSelectedCoverPath] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(8);
   const [searchText, setSearchText] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft | null>(null);
+  const [activeMetadataPicker, setActiveMetadataPicker] = useState<MetadataPickerKey | null>(null);
+  const [metadataPickerSearch, setMetadataPickerSearch] = useState("");
+  const [structuredMetadataText, setStructuredMetadataText] = useState("");
+  const [structuredMetadataMode, setStructuredMetadataMode] = useState<StructuredMetadataMode>("skip");
+  const [structuredMetadataStatus, setStructuredMetadataStatus] = useState("");
 
   const selectedWork = works.find((work) => work.rjId === selectedWorkId) ?? works[0] ?? null;
-  const playingWork = works.find((work) => work.rjId === playingTrack?.workId) ?? selectedWork;
   const audioItems = folderItems.filter((item) => item.kind === "audio");
-  const audioSrc = playingTrack ? convertFileSrc(playingTrack.item.absolutePath) : "";
-  const activeSubtitleIndex = subtitles.reduce((activeIndex, line, index) => {
-    return audioPosition >= line.start ? index : activeIndex;
-  }, -1);
 
   const sectionLabel = activeSection === "circles" ? "社团" : activeSection === "tags" ? "标签" : activeSection === "voices" ? "声优" : "媒体库";
   const activeFilterLabel =
@@ -329,6 +228,7 @@ export function AsmrWorkspace() {
       });
       setFolderPath(payload.folderPath);
       setFolderItems(payload.items);
+      setSelectedCoverPath("");
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
       setFolderPath(nextFolderPath);
@@ -371,20 +271,15 @@ export function AsmrWorkspace() {
     }
   }
 
-  async function setCover(work: AsmrWork) {
+  async function setCover(work: AsmrWork, relativePath: string) {
+    if (!relativePath) return;
     setBusy(true);
     setErrorMessage("");
     try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        filters: [{ name: "Images", extensions: ["jpg", "jpeg", "png", "webp", "gif", "bmp"] }],
-      });
-      if (typeof selected !== "string") return;
       const updated = await invoke<AsmrWork>("set_asmr_cover", {
         input: {
           rjId: work.rjId,
-          sourcePath: selected,
+          relativePath,
         },
       });
       setWorks((current) => current.map((item) => (item.rjId === updated.rjId ? updated : item)));
@@ -425,6 +320,12 @@ export function AsmrWorkspace() {
   function applyAsmrPayload(payload: AsmrBootstrapPayload) {
     setWorks(payload.works);
     setDictionaries(payload.dictionaries);
+  }
+
+  function mergeDictionaryValues(currentValues: string[], nextValues: string[]) {
+    return Array.from(
+      new Set([...currentValues, ...nextValues.map((value) => value.trim()).filter(Boolean)]),
+    ).sort((left, right) => left.localeCompare(right));
   }
 
   async function upsertDictionaryValue(section: Exclude<AsmrSection, "library">, oldValue?: string) {
@@ -479,17 +380,227 @@ export function AsmrWorkspace() {
       voiceActors: work.voiceActors,
       note: work.note,
     });
+    setActiveMetadataPicker(null);
+    setMetadataPickerSearch("");
+    setStructuredMetadataText("");
+    setStructuredMetadataStatus("");
   }
 
-  function toggleDraftValue(key: "tags" | "voiceActors", value: string) {
+  function addDraftValue(key: MetadataPickerKey, value: string) {
     setMetadataDraft((current) => {
       if (!current) return current;
       const values = current[key];
+      if (values.includes(value)) return current;
       return {
         ...current,
-        [key]: values.includes(value) ? values.filter((item) => item !== value) : [...values, value],
+        [key]: [...values, value],
       };
     });
+  }
+
+  function removeDraftValue(key: MetadataPickerKey, value: string) {
+    setMetadataDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        [key]: current[key].filter((item) => item !== value),
+      };
+    });
+  }
+
+  function openMetadataPicker(key: MetadataPickerKey) {
+    setActiveMetadataPicker((current) => (current === key ? null : key));
+    setMetadataPickerSearch("");
+  }
+
+  function renderMetadataValueEditor(
+    label: string,
+    key: MetadataPickerKey,
+    selectedValues: string[],
+    dictionaryValues: string[],
+  ) {
+    const query = metadataPickerSearch.trim().toLowerCase();
+    const candidates = dictionaryValues
+      .filter((value) => !selectedValues.includes(value))
+      .filter((value) => !query || value.toLowerCase().includes(query));
+
+    return (
+      <div className="settings-field">
+        <span>{label}</span>
+        <div className="asmr-selected-picker">
+          <div className="asmr-selected-chip-row">
+            {selectedValues.length ? (
+              selectedValues.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`asmr-selected-chip ${key === "voiceActors" ? "is-voice" : ""}`}
+                  onClick={() => removeDraftValue(key, value)}
+                  title={`移除${value}`}
+                >
+                  <span>{value}</span>
+                  <X size={14} strokeWidth={1.9} />
+                </button>
+              ))
+            ) : (
+              <span className="asmr-selected-empty">未添加</span>
+            )}
+            <button
+              type="button"
+              className="asmr-picker-add-button"
+              onClick={() => openMetadataPicker(key)}
+              aria-label={`添加${label}`}
+              title={`添加${label}`}
+            >
+              <Plus size={17} strokeWidth={2} />
+            </button>
+          </div>
+
+          {activeMetadataPicker === key ? (
+            <div className="asmr-picker-popover">
+              <label className="asmr-picker-search">
+                <Search size={15} strokeWidth={1.8} />
+                <input
+                  autoFocus
+                  type="search"
+                  placeholder={`搜索${label}`}
+                  value={metadataPickerSearch}
+                  onChange={(event) => setMetadataPickerSearch(event.target.value)}
+                />
+              </label>
+              <div className="asmr-picker-option-list">
+                {candidates.length ? (
+                  candidates.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="asmr-picker-option"
+                      onClick={() => {
+                        addDraftValue(key, value);
+                        setMetadataPickerSearch("");
+                      }}
+                    >
+                      <Plus size={15} strokeWidth={2} />
+                      <span>{value}</span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="asmr-picker-empty">没有可添加项</span>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
+  function metadataStringValue(value: unknown) {
+    return typeof value === "string" ? value.trim() : null;
+  }
+
+  function metadataStringList(value: unknown) {
+    if (!Array.isArray(value)) return null;
+    return Array.from(
+      new Set(
+        value
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  function applyStructuredMetadata() {
+    if (!metadataDraft) return;
+    setStructuredMetadataStatus("");
+
+    let parsed: StructuredMetadataInput;
+    try {
+      parsed = JSON.parse(structuredMetadataText) as StructuredMetadataInput;
+    } catch (error) {
+      setStructuredMetadataStatus(`JSON 解析失败：${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setStructuredMetadataStatus("JSON 顶层必须是对象。");
+      return;
+    }
+
+    const knownCircles = new Set(dictionaries.circles);
+    const knownTags = new Set(dictionaries.tags);
+    const knownVoiceActors = new Set(dictionaries.voiceActors);
+    const skipped: string[] = [];
+    const created = {
+      circles: [] as string[],
+      tags: [] as string[],
+      voiceActors: [] as string[],
+    };
+
+    const nextDraft: MetadataDraft = { ...metadataDraft };
+    if ("title" in parsed) {
+      const title = metadataStringValue(parsed.title);
+      if (title !== null) nextDraft.title = title;
+    }
+    if ("note" in parsed) {
+      const note = metadataStringValue(parsed.note);
+      if (note !== null) nextDraft.note = note;
+    }
+    if ("circle" in parsed) {
+      const circle = metadataStringValue(parsed.circle);
+      if (circle === "") {
+        nextDraft.circle = "";
+      } else if (circle) {
+        if (knownCircles.has(circle) || structuredMetadataMode === "create") {
+          nextDraft.circle = circle;
+          if (!knownCircles.has(circle)) created.circles.push(circle);
+        } else {
+          skipped.push(`社团：${circle}`);
+        }
+      }
+    }
+
+    const tags = metadataStringList(parsed.tags);
+    if (tags) {
+      nextDraft.tags = tags.filter((tag) => {
+        if (knownTags.has(tag)) return true;
+        if (structuredMetadataMode === "create") {
+          created.tags.push(tag);
+          return true;
+        }
+        skipped.push(`标签：${tag}`);
+        return false;
+      });
+    }
+
+    const voiceActors = metadataStringList(parsed.voiceActors ?? parsed.voice_actors);
+    if (voiceActors) {
+      nextDraft.voiceActors = voiceActors.filter((voiceActor) => {
+        if (knownVoiceActors.has(voiceActor)) return true;
+        if (structuredMetadataMode === "create") {
+          created.voiceActors.push(voiceActor);
+          return true;
+        }
+        skipped.push(`声优：${voiceActor}`);
+        return false;
+      });
+    }
+
+    setMetadataDraft(nextDraft);
+    if (structuredMetadataMode === "create") {
+      setDictionaries((current) => ({
+        circles: mergeDictionaryValues(current.circles, created.circles),
+        tags: mergeDictionaryValues(current.tags, created.tags),
+        voiceActors: mergeDictionaryValues(current.voiceActors, created.voiceActors),
+      }));
+    }
+
+    const createdCount = created.circles.length + created.tags.length + created.voiceActors.length;
+    const parts = ["已应用到当前表单"];
+    if (createdCount) parts.push(`新增 ${createdCount} 项`);
+    if (skipped.length) parts.push(`跳过 ${skipped.length} 项`);
+    setStructuredMetadataStatus(parts.join("，") + "。");
   }
 
   async function saveMetadata() {
@@ -511,90 +622,47 @@ export function AsmrWorkspace() {
       });
       setWorks((current) => current.map((work) => (work.rjId === updated.rjId ? updated : work)));
       setMetadataDraft(null);
+      setActiveMetadataPicker(null);
+      setMetadataPickerSearch("");
+      setStructuredMetadataText("");
+      setStructuredMetadataStatus("");
       void bootstrapAsmr();
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
-  function persistPlayback(track: PlayingTrack | null, seconds: number, force = false) {
-    if (!track) return;
-    const positionMs = Math.max(0, Math.floor(seconds * 1000));
-    const key = `${track.workId}:${track.item.relativePath}`;
-    const previous = lastPlaybackSaveRef.current;
-    if (!force && previous.key === key && Math.abs(positionMs - previous.positionMs) < 5000) {
-      return;
-    }
-    lastPlaybackSaveRef.current = { key, positionMs };
-    void invoke<AsmrWork>("update_asmr_playback", {
-      input: {
-        rjId: track.workId,
-        audioPath: track.item.relativePath,
-        positionMs,
-      },
-    }).then(
-      (updated) => setWorks((current) => current.map((work) => (work.rjId === updated.rjId ? updated : work))),
-      () => {},
-    );
-  }
-
-  function playItem(item: AsmrFileItem) {
+  async function playItem(item: AsmrFileItem) {
     if (!selectedWork || item.kind !== "audio") return;
     setErrorMessage("");
-    if (playingTrack) {
-      persistPlayback(playingTrack, audioRef.current?.currentTime ?? audioPosition, true);
-    }
-    const resumeSeconds =
-      selectedWork.lastPlayedAudioPath === item.relativePath ? Math.floor(selectedWork.lastPositionMs / 1000) : 0;
-    const nextTrack = { workId: selectedWork.rjId, item };
-    setPlayingTrack(nextTrack);
-    setIsPlaying(true);
-    setAudioPosition(resumeSeconds);
-    persistPlayback(nextTrack, resumeSeconds, true);
-  }
-
-  function playAdjacent(offset: number) {
-    if (!playingTrack) return;
-    const index = audioItems.findIndex((item) => item.relativePath === playingTrack.item.relativePath);
-    const next = audioItems[index + offset];
-    if (next) {
-      playItem(next);
-    }
-  }
-
-  function togglePlayback() {
-    const audio = audioRef.current;
-    if (!audio || !audioSrc) return;
-    if (audio.paused) {
-      void audio.play().catch((error) => {
-        setIsPlaying(false);
-        setErrorMessage(`播放失败：${error instanceof Error ? error.message : String(error)}`);
+    const startIndex = audioItems.findIndex((audioItem) => audioItem.relativePath === item.relativePath);
+    if (startIndex < 0) return;
+    const request: PlayerQueueRequest = {
+      source: "dl_asmr",
+      startIndex,
+      tracks: audioItems.map((audioItem) => ({
+        id: `${selectedWork.rjId}:${audioItem.relativePath}`,
+        title: audioItem.name,
+        workId: selectedWork.rjId,
+        workTitle: selectedWork.title,
+        absolutePath: audioItem.absolutePath,
+        relativePath: audioItem.relativePath,
+        subtitlePath: audioItem.subtitlePath,
+      })),
+    };
+    try {
+      await invoke("request_main_playback", { request });
+      const updated = await invoke<AsmrWork>("update_asmr_playback", {
+        input: {
+          rjId: selectedWork.rjId,
+          audioPath: item.relativePath,
+          positionMs: 0,
+        },
       });
-      setIsPlaying(true);
-    } else {
-      persistPlayback(playingTrack, audio.currentTime, true);
-      audio.pause();
-      setIsPlaying(false);
+      setWorks((current) => current.map((work) => (work.rjId === updated.rjId ? updated : work)));
+    } catch (error) {
+      setErrorMessage(`无法交给主程序播放：${error instanceof Error ? error.message : String(error)}`);
     }
-  }
-
-  function seekTo(seconds: number) {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.currentTime = Math.max(0, Math.min(seconds, audioDuration || seconds));
-    setAudioPosition(audio.currentTime);
-    persistPlayback(playingTrack, audio.currentTime, true);
-  }
-
-  function nudge(seconds: number) {
-    seekTo(audioPosition + seconds);
-  }
-
-  function scrollActiveSubtitle() {
-    activeSubtitleRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-    });
   }
 
   useEffect(() => {
@@ -605,51 +673,12 @@ export function AsmrWorkspace() {
     setPage((current) => Math.min(current, pageCount));
   }, [pageCount]);
 
-  useEffect(() => {
-    if (!audioRef.current || !audioSrc || !isPlaying) return;
-    audioRef.current.load();
-    audioRef.current.currentTime = audioPosition;
-    void audioRef.current.play().catch((error) => {
-      setIsPlaying(false);
-      setErrorMessage(`播放失败：${error instanceof Error ? error.message : String(error)}`);
-    });
-  }, [audioSrc, isPlaying]);
-
-  useEffect(() => {
-    if (audioRef.current) {
-      audioRef.current.volume = volume;
-    }
-  }, [volume]);
-
-  useEffect(() => {
-    setSubtitles([]);
-    setSubtitleError("");
-    setAutoScrollSubtitles(true);
-    if (!playingTrack?.item.subtitlePath) return;
-    const relativePath = subtitleRelativePath(playingTrack.item);
-    if (!relativePath) return;
-    void invoke<string>("read_asmr_text_file", {
-      input: {
-        rjId: playingTrack.workId,
-        relativePath,
-      },
-    }).then(
-      (raw) => setSubtitles(parseSubtitles(raw)),
-      (error) => setSubtitleError(error instanceof Error ? error.message : String(error)),
-    );
-  }, [playingTrack]);
-
-  useEffect(() => {
-    if (!playerExpanded || !autoScrollSubtitles || activeSubtitleIndex < 0) return;
-    scrollActiveSubtitle();
-  }, [activeSubtitleIndex, autoScrollSubtitles, playerExpanded]);
-
   return (
     <div className="module-body asmr-module-body">
       <aside className="asmr-sidebar">
         <div className="asmr-sidebar-header">
-          <span className="section-label">ASMR</span>
-          <h1>音声资料库</h1>
+          <span className="section-label">DL_ASMR</span>
+          <h1>DLsite 音声资料库</h1>
         </div>
 
         <div className="asmr-nav-list">
@@ -781,7 +810,7 @@ export function AsmrWorkspace() {
                       onClick={() => openWork(work.rjId)}
                     >
                       <span className="asmr-work-cover">
-                        {work.thumbnailPath ? <img src={convertFileSrc(work.thumbnailPath)} alt="" /> : null}
+                        {work.coverPath ? <img src={convertFileSrc(work.coverPath)} alt="" /> : null}
                         <strong>{work.rjId}</strong>
                       </span>
                       <span className="asmr-work-card-body">
@@ -841,14 +870,14 @@ export function AsmrWorkspace() {
                 <>
                   <section className="asmr-work-strip">
                     <div className="asmr-cover-placeholder">
-                      {selectedWork.thumbnailPath ? <img src={convertFileSrc(selectedWork.thumbnailPath)} alt="" /> : <span>RJ</span>}
+                      {selectedWork.coverPath ? <img src={convertFileSrc(selectedWork.coverPath)} alt="" /> : <span>RJ</span>}
                     </div>
                     <div className="asmr-work-copy">
                       <span className="section-label">{selectedWork.rjId}</span>
                       <h2>{selectedWork.title || selectedWork.rjId}</h2>
                       <div className="asmr-work-meta">
                         <span>{selectedWork.circle || "社团未指定"}</span>
-                        <span>封面手动指定</span>
+                        <span>{selectedWork.coverPath ? "已设置作品内封面" : "尚未设置封面"}</span>
                       </div>
                       <div className="asmr-chip-row">
                         {selectedWork.tags.map((tag) => (
@@ -864,9 +893,6 @@ export function AsmrWorkspace() {
                       </div>
                     </div>
                     <div className="asmr-work-actions">
-                      <button type="button" className="soft-button" disabled={busy} onClick={() => void setCover(selectedWork)}>
-                        指定封面
-                      </button>
                       <button type="button" className="soft-button" onClick={() => startMetadataEdit(selectedWork)}>
                         编辑信息
                       </button>
@@ -885,6 +911,17 @@ export function AsmrWorkspace() {
                             <strong>{folderPath}</strong>
                           </>
                         ) : null}
+                      </div>
+                      <div className="asmr-file-toolbar-actions">
+                        {selectedCoverPath ? <span title={selectedCoverPath}>已选择图片</span> : <span>先选择一张图片</span>}
+                        <button
+                          type="button"
+                          className="soft-button"
+                          disabled={busy || !selectedCoverPath}
+                          onClick={() => void setCover(selectedWork, selectedCoverPath)}
+                        >
+                          设置封面
+                        </button>
                       </div>
                     </div>
 
@@ -911,14 +948,14 @@ export function AsmrWorkspace() {
                         <button
                           key={file.relativePath}
                           type="button"
-                          className={`asmr-file-row is-${file.kind} ${
-                            file.relativePath === playingTrack?.item.relativePath ? "is-selected" : ""
-                          }`}
+                          className={`asmr-file-row is-${file.kind} ${selectedCoverPath === file.relativePath ? "is-selected" : ""}`}
                           onClick={() => {
                             if (file.kind === "folder") {
                               void loadFolder(selectedWork.rjId, file.relativePath);
                             } else if (file.kind === "audio") {
-                              playItem(file);
+                              void playItem(file);
+                            } else if (file.kind === "image") {
+                              setSelectedCoverPath(file.relativePath);
                             }
                           }}
                         >
@@ -927,9 +964,10 @@ export function AsmrWorkspace() {
                           </span>
                           <span className="asmr-file-copy">
                             <strong>{file.name}</strong>
-                            <small>{file.kind === "audio" && file.subtitlePath ? "同名字幕已关联" : file.kind}</small>
+                            <small>{fileKindLabel(file)}</small>
                           </span>
                           {file.kind === "audio" ? <Play size={18} strokeWidth={1.85} /> : null}
+                          {file.kind === "image" && selectedCoverPath === file.relativePath ? <Check size={18} strokeWidth={2} /> : null}
                         </button>
                       ))}
                     </div>
@@ -939,40 +977,6 @@ export function AsmrWorkspace() {
             </section>
           )}
         </div>
-
-        <section className="asmr-player">
-          <button type="button" className="asmr-player-track" onClick={() => playingTrack && setPlayerExpanded(true)} disabled={!playingTrack}>
-            <span className="section-label">正在播放：{playingWork?.rjId ?? "未选择"}</span>
-            <strong>{playingTrack ? playingTrack.item.name : "尚未播放音频"}</strong>
-          </button>
-          <div className="asmr-player-controls">
-            <button type="button" aria-label="上一首" title="上一首" onClick={() => playAdjacent(-1)}>
-              <SkipBack size={18} strokeWidth={1.8} />
-            </button>
-            <button type="button" className="is-primary" aria-label="播放/暂停" title="播放/暂停" onClick={togglePlayback}>
-              {isPlaying ? <Pause size={19} strokeWidth={1.8} /> : <Play size={21} fill="currentColor" strokeWidth={1.8} />}
-            </button>
-            <button type="button" aria-label="下一首" title="下一首" onClick={() => playAdjacent(1)}>
-              <SkipForward size={18} strokeWidth={1.8} />
-            </button>
-          </div>
-          <audio
-            ref={audioRef}
-            src={audioSrc}
-            onPlay={() => setIsPlaying(true)}
-            onPause={(event) => {
-              persistPlayback(playingTrack, event.currentTarget.currentTime, true);
-              setIsPlaying(false);
-            }}
-            onLoadedMetadata={(event) => setAudioDuration(event.currentTarget.duration)}
-            onTimeUpdate={(event) => {
-              setAudioPosition(event.currentTarget.currentTime);
-              persistPlayback(playingTrack, event.currentTarget.currentTime);
-            }}
-            onEnded={() => playAdjacent(1)}
-            onError={() => setErrorMessage("播放失败：当前音频无法加载，可能是格式不受 WebView 支持或资源访问被阻止。")}
-          />
-        </section>
 
         {metadataDraft && selectedWork ? (
           <div className="inline-modal-backdrop">
@@ -1002,36 +1006,8 @@ export function AsmrWorkspace() {
                   ))}
                 </select>
               </label>
-              <div className="settings-field">
-                <span>标签</span>
-                <div className="asmr-picker-grid">
-                  {dictionaries.tags.map((tag) => (
-                    <label key={tag}>
-                      <input
-                        type="checkbox"
-                        checked={metadataDraft.tags.includes(tag)}
-                        onChange={() => toggleDraftValue("tags", tag)}
-                      />
-                      <span>{tag}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="settings-field">
-                <span>声优</span>
-                <div className="asmr-picker-grid">
-                  {dictionaries.voiceActors.map((voiceActor) => (
-                    <label key={voiceActor}>
-                      <input
-                        type="checkbox"
-                        checked={metadataDraft.voiceActors.includes(voiceActor)}
-                        onChange={() => toggleDraftValue("voiceActors", voiceActor)}
-                      />
-                      <span>{voiceActor}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
+              {renderMetadataValueEditor("标签", "tags", metadataDraft.tags, dictionaries.tags)}
+              {renderMetadataValueEditor("声优", "voiceActors", metadataDraft.voiceActors, dictionaries.voiceActors)}
               <label className="settings-field">
                 <span>备注</span>
                 <textarea
@@ -1039,8 +1015,47 @@ export function AsmrWorkspace() {
                   onChange={(event) => setMetadataDraft((current) => current && { ...current, note: event.target.value })}
                 />
               </label>
+              <section className="asmr-structured-import">
+                <div className="asmr-structured-import-header">
+                  <span>Structured metadata import</span>
+                  <label>
+                    <select
+                      value={structuredMetadataMode}
+                      onChange={(event) => setStructuredMetadataMode(event.target.value as StructuredMetadataMode)}
+                    >
+                      <option value="skip">不存在自动跳过</option>
+                      <option value="create">不存在自动新建</option>
+                    </select>
+                  </label>
+                </div>
+                <textarea
+                  value={structuredMetadataText}
+                  onChange={(event) => {
+                    setStructuredMetadataText(event.target.value);
+                    setStructuredMetadataStatus("");
+                  }}
+                  placeholder={`{\n  "title": "作品标题",\n  "circle": "社团名",\n  "tags": ["标签A", "标签B"],\n  "voiceActors": ["声优A", "声优B"],\n  "note": "备注"\n}`}
+                  spellCheck={false}
+                />
+                <div className="asmr-structured-import-footer">
+                  <button type="button" className="soft-button" onClick={applyStructuredMetadata}>
+                    应用到表单
+                  </button>
+                  {structuredMetadataStatus ? <span>{structuredMetadataStatus}</span> : null}
+                </div>
+              </section>
               <div className="inline-modal-actions">
-                <button type="button" className="soft-button" onClick={() => setMetadataDraft(null)}>
+                <button
+                  type="button"
+                  className="soft-button"
+                  onClick={() => {
+                    setMetadataDraft(null);
+                    setActiveMetadataPicker(null);
+                    setMetadataPickerSearch("");
+                    setStructuredMetadataText("");
+                    setStructuredMetadataStatus("");
+                  }}
+                >
                   取消
                 </button>
                 <button type="button" className="soft-button" onClick={() => void saveMetadata()}>
@@ -1051,109 +1066,6 @@ export function AsmrWorkspace() {
           </div>
         ) : null}
 
-        {playerExpanded ? (
-          <aside className="asmr-player-panel">
-            <button
-              type="button"
-              className="asmr-player-panel-handle"
-              aria-label="收起播放器"
-              title="收起播放器"
-              onClick={() => setPlayerExpanded(false)}
-            >
-              <span />
-            </button>
-            <div className="asmr-player-panel-header">
-              <div>
-                <h3>{playingTrack?.item.name ?? "尚未播放音频"}</h3>
-              </div>
-              <button
-                type="button"
-                aria-label="定位当前字幕"
-                title="定位当前字幕"
-                onClick={() => {
-                  setAutoScrollSubtitles(true);
-                  window.requestAnimationFrame(scrollActiveSubtitle);
-                }}
-              >
-                <LocateFixed size={22} strokeWidth={1.8} />
-              </button>
-            </div>
-
-            <div
-              ref={subtitlePanelRef}
-              className="asmr-subtitle-panel"
-              onWheel={() => setAutoScrollSubtitles(false)}
-              onPointerDown={() => setAutoScrollSubtitles(false)}
-            >
-              {subtitles.length ? (
-                subtitles.map((line, index) => (
-                  <button
-                    key={`${line.start}-${index}`}
-                    ref={index === activeSubtitleIndex ? activeSubtitleRef : null}
-                    type="button"
-                    className={`asmr-subtitle-line ${index === activeSubtitleIndex ? "is-active" : ""}`}
-                    onClick={() => seekTo(line.start)}
-                  >
-                    <span>[{formatDuration(line.start)}]</span>
-                    <strong>{line.text}</strong>
-                  </button>
-                ))
-              ) : (
-                <div className="asmr-subtitle-empty">
-                  {subtitleError ? `字幕读取失败：${subtitleError}` : "当前音频没有可显示的字幕。"}
-                </div>
-              )}
-            </div>
-
-            <div className="asmr-expanded-progress">
-              <input
-                type="range"
-                min={0}
-                max={audioDuration || 0}
-                step={0.1}
-                value={Math.min(audioPosition, audioDuration || audioPosition)}
-                onChange={(event) => seekTo(Number(event.target.value))}
-              />
-              <div>
-                <span>{formatDuration(audioPosition)}</span>
-                <span>{formatDuration(audioDuration)}</span>
-              </div>
-            </div>
-
-            <div className="asmr-expanded-controls">
-              <button type="button" aria-label="上一首" title="上一首" onClick={() => playAdjacent(-1)}>
-                <SkipBack size={21} strokeWidth={1.8} />
-              </button>
-              <button type="button" aria-label="快退 5 秒" title="快退 5 秒" onClick={() => nudge(-5)}>
-                <RotateCcw size={21} strokeWidth={1.8} />
-                <span>5</span>
-              </button>
-              <button type="button" className="is-primary" aria-label="播放/暂停" title="播放/暂停" onClick={togglePlayback}>
-                {isPlaying ? <Pause size={28} strokeWidth={1.8} /> : <Play size={30} fill="currentColor" strokeWidth={1.8} />}
-              </button>
-              <button type="button" aria-label="快进 30 秒" title="快进 30 秒" onClick={() => nudge(30)}>
-                <RotateCw size={21} strokeWidth={1.8} />
-                <span>30</span>
-              </button>
-              <button type="button" aria-label="下一首" title="下一首" onClick={() => playAdjacent(1)}>
-                <SkipForward size={21} strokeWidth={1.8} />
-              </button>
-            </div>
-
-            <label className="asmr-volume-row">
-              <Volume2 size={19} strokeWidth={1.8} />
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.01}
-                value={volume}
-                onChange={(event) => setVolume(Number(event.target.value))}
-              />
-              <span>{Math.round(volume * 100)}%</span>
-            </label>
-          </aside>
-        ) : null}
       </main>
     </div>
   );

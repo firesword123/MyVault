@@ -11,6 +11,8 @@ type ShellFrameProps = {
   settingsPanel: ReactNode;
   onSelectModule: (moduleId: string) => void;
   onOpenSettings: () => void;
+  showMemory?: boolean;
+  memoryBytes?: number | null;
   onMinimize?: () => void;
   onClose?: () => void;
 };
@@ -23,6 +25,8 @@ export function ShellFrame({
   settingsPanel,
   onSelectModule,
   onOpenSettings,
+  showMemory,
+  memoryBytes,
   onMinimize,
   onClose,
 }: ShellFrameProps) {
@@ -35,6 +39,9 @@ export function ShellFrame({
         activeModule={activeModule}
         onSelectModule={onSelectModule}
         onOpenSettings={onOpenSettings}
+        showSettings={false}
+        showMemory={showMemory}
+        memoryBytes={memoryBytes}
         onMinimize={onMinimize}
         onClose={onClose}
       />

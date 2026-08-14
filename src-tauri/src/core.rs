@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use sysinfo::{get_current_pid, System};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 pub(crate) const DRAFTS_FOLDER: &str = "drafts";
 pub(crate) const INBOX_FOLDER: &str = "inbox";
@@ -39,6 +39,10 @@ pub(crate) struct AppSettings {
     pub(crate) notes_state: NotesWindowState,
     #[serde(default)]
     persistent_modules: Vec<String>,
+    #[serde(default)]
+    close_player_on_pause: bool,
+    #[serde(default)]
+    show_memory_in_titlebar: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -109,6 +113,8 @@ fn default_settings() -> AppSettings {
         no_proxy: String::new(),
         notes_state: default_notes_state(),
         persistent_modules: Vec::new(),
+        close_player_on_pause: false,
+        show_memory_in_titlebar: false,
     }
 }
 
@@ -147,64 +153,108 @@ pub(crate) fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
-fn app_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let executable_dir = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve current executable: {error}"))?
-        .parent()
-        .map(Path::to_path_buf)
-        .or_else(|| app.path().executable_dir().ok())
-        .ok_or_else(|| "failed to resolve executable dir".to_string())?;
-
-    Ok(executable_dir.join("myvault-data"))
+pub(crate) fn data_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    crate::storage::data_root_dir(app)
 }
 
 pub(crate) fn vault_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app_root_dir(app)?.join("vault"))
+    data_root_dir(app)
+}
+
+#[allow(dead_code)]
+pub(crate) fn set_data_root_override(path: PathBuf) -> Result<(), String> {
+    crate::storage::set_data_root_override(path)
 }
 
 pub(crate) fn notes_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(vault_dir(app)?.join("notes"))
+    Ok(data_root_dir(app)?.join("Notes"))
 }
 
 fn images_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(vault_dir(app)?.join("images"))
+    Ok(data_root_dir(app)?.join("Attachments"))
 }
 
 fn asmr_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(vault_dir(app)?.join("asmr"))
+    Ok(data_root_dir(app)?.join("DL_ASMR"))
 }
 
+#[allow(dead_code)]
+pub(crate) fn gallery_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_root_dir(app)?.join("Gallery"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn gallery_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_root_dir(app)?
+        .join("_MyVault")
+        .join("Cache")
+        .join("Gallery"))
+}
+
+#[allow(dead_code)]
 pub(crate) fn asmr_works_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(asmr_dir(app)?.join("works"))
+    asmr_dir(app)
 }
 
+#[allow(dead_code)]
 pub(crate) fn asmr_index_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(asmr_dir(app)?.join("rj-index.json"))
+    Ok(asmr_dir(app)?.join("_Library.json"))
 }
 
 pub(crate) fn drafts_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(notes_dir(app)?.join(DRAFTS_FOLDER))
+    Ok(notes_dir(app)?.join("_Drafts"))
 }
 
 pub(crate) fn inbox_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(notes_dir(app)?.join(INBOX_FOLDER))
+    Ok(notes_dir(app)?.join("_Inbox"))
 }
 
 pub(crate) fn trash_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(notes_dir(app)?.join(TRASH_FOLDER))
+    Ok(notes_dir(app)?.join("_Trash"))
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app_root_dir(app)?.join("settings.json"))
+    Ok(data_root_dir(app)?.join("_MyVault").join("Settings.json"))
+}
+
+pub(crate) fn notes_folder_dir(app: &AppHandle, logical: &str) -> Result<PathBuf, String> {
+    let mut parts = logical.split('/');
+    let first = parts.next().unwrap_or(INBOX_FOLDER);
+    let physical = match first {
+        DRAFTS_FOLDER => "_Drafts",
+        INBOX_FOLDER => "_Inbox",
+        TRASH_FOLDER => "_Trash",
+        value => value,
+    };
+    let mut path = notes_dir(app)?.join(physical);
+    for part in parts {
+        path.push(part);
+    }
+    Ok(path)
+}
+
+pub(crate) fn logical_notes_folder(relative: &Path) -> String {
+    let normalized = relative.to_string_lossy().replace('\\', "/");
+    let mut parts = normalized.split('/');
+    let first = parts.next().unwrap_or_default();
+    let logical = match first {
+        "_Drafts" => DRAFTS_FOLDER,
+        "_Inbox" => INBOX_FOLDER,
+        "_Trash" => TRASH_FOLDER,
+        value => value,
+    };
+    std::iter::once(logical)
+        .chain(parts)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
-    let root = app_root_dir(app)?;
+    let root = crate::storage::prepare_data_root(app)?;
     let vault = vault_dir(app)?;
     let notes = notes_dir(app)?;
     let images = images_dir(app)?;
-    let asmr = asmr_dir(app)?;
-    let asmr_works = asmr_works_dir(app)?;
     let drafts = drafts_dir(app)?;
     let inbox = inbox_dir(app)?;
     let trash = trash_dir(app)?;
@@ -214,9 +264,6 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     fs::create_dir_all(&vault).map_err(|error| format!("failed to create vault dir: {error}"))?;
     fs::create_dir_all(&notes).map_err(|error| format!("failed to create notes dir: {error}"))?;
     fs::create_dir_all(&images).map_err(|error| format!("failed to create images dir: {error}"))?;
-    fs::create_dir_all(&asmr).map_err(|error| format!("failed to create asmr dir: {error}"))?;
-    fs::create_dir_all(&asmr_works)
-        .map_err(|error| format!("failed to create asmr works dir: {error}"))?;
     fs::create_dir_all(&drafts).map_err(|error| format!("failed to create drafts dir: {error}"))?;
     fs::create_dir_all(&inbox).map_err(|error| format!("failed to create inbox dir: {error}"))?;
     fs::create_dir_all(&trash).map_err(|error| format!("failed to create trash dir: {error}"))?;
@@ -229,6 +276,29 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn ensure_asmr_layout(app: &AppHandle) -> Result<(), String> {
+    let vault = crate::storage::prepare_data_root(app)?;
+    let asmr = asmr_dir(app)?;
+    let asmr_works = asmr_works_dir(app)?;
+    fs::create_dir_all(&vault).map_err(|error| format!("failed to create vault dir: {error}"))?;
+    fs::create_dir_all(&asmr).map_err(|error| format!("failed to create asmr dir: {error}"))?;
+    fs::create_dir_all(&asmr_works)
+        .map_err(|error| format!("failed to create asmr works dir: {error}"))
+}
+
+#[allow(dead_code)]
+pub(crate) fn ensure_gallery_layout(app: &AppHandle) -> Result<(), String> {
+    let root = crate::storage::prepare_data_root(app)?;
+    let gallery = gallery_dir(app)?;
+    let cache = gallery_cache_dir(app)?;
+    fs::create_dir_all(&root).map_err(|error| format!("failed to create vault dir: {error}"))?;
+    fs::create_dir_all(&gallery)
+        .map_err(|error| format!("failed to create gallery dir: {error}"))?;
+    fs::create_dir_all(&cache)
+        .map_err(|error| format!("failed to create gallery cache dir: {error}"))
 }
 
 pub(crate) fn load_settings(app: &AppHandle) -> Result<AppSettings, String> {
@@ -359,13 +429,26 @@ pub(crate) fn get_resource_usage() -> Result<ResourceUsage, String> {
     let mut webview_cpu_percent = 0.0;
     let mut webview_processes = 0;
 
+    let app_processes = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let name = process.name().to_ascii_lowercase();
+            (*pid == current_pid
+                || (name.contains("myvault") && is_descendant_process(&system, *pid, current_pid)))
+            .then_some(*pid)
+        })
+        .collect::<Vec<_>>();
+
     for (pid, process) in system.processes() {
         let name = process.name().to_ascii_lowercase();
-        if *pid == current_pid || name.contains("myvault") {
+        if app_processes.contains(pid) {
             app_memory_bytes += process.memory();
             app_cpu_percent += process.cpu_usage();
         } else if name.contains("msedgewebview2")
-            && is_descendant_process(&system, *pid, current_pid)
+            && app_processes
+                .iter()
+                .any(|app_pid| is_descendant_process(&system, *pid, *app_pid))
         {
             webview_memory_bytes += process.memory();
             webview_cpu_percent += process.cpu_usage();

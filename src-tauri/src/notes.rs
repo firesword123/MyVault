@@ -1,7 +1,7 @@
 use crate::core::{
-    drafts_dir, ensure_vault_layout, load_settings, notes_dir, now_ts, read_utf8_file,
-    save_settings_file, trash_dir, vault_dir, write_utf8_file, AppSettings, DRAFTS_FOLDER,
-    INBOX_FOLDER, TRASH_FOLDER,
+    data_root_dir, drafts_dir, ensure_vault_layout, load_settings, logical_notes_folder, notes_dir,
+    notes_folder_dir, now_ts, read_utf8_file, save_settings_file, trash_dir, write_utf8_file,
+    AppSettings, DRAFTS_FOLDER, INBOX_FOLDER, TRASH_FOLDER,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -145,7 +145,7 @@ fn note_file_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
 fn note_file_path_in_folder(app: &AppHandle, folder: &str, id: &str) -> Result<PathBuf, String> {
     validate_note_id(id)?;
     let normalized = normalize_folder_path(folder)?;
-    Ok(notes_dir(app)?.join(normalized).join(format!("{id}.md")))
+    Ok(notes_folder_dir(app, &normalized)?.join(format!("{id}.md")))
 }
 
 fn validate_note_id(id: &str) -> Result<(), String> {
@@ -167,9 +167,14 @@ fn normalize_folder_path(folder: &str) -> Result<String, String> {
         return Ok(INBOX_FOLDER.to_string());
     }
 
+    let candidate = Path::new(&trimmed);
     let valid = trimmed
         .split('/')
-        .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+        .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+        && !candidate.is_absolute()
+        && candidate
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
 
     if valid {
         Ok(trimmed)
@@ -287,7 +292,7 @@ fn folder_path_from_note_path(app: &AppHandle, path: &Path) -> Result<String, St
         .strip_prefix(&notes_root)
         .map_err(|error| format!("failed to resolve folder path: {error}"))?;
 
-    let folder = relative.to_string_lossy().replace('\\', "/");
+    let folder = logical_notes_folder(relative);
     if folder.is_empty() {
         Ok(INBOX_FOLDER.to_string())
     } else {
@@ -305,6 +310,10 @@ fn is_trash_folder(folder: &str) -> bool {
 
 fn can_delete_note_permanently(folder: &str) -> bool {
     is_trash_folder(folder)
+}
+
+fn can_discard_draft(folder: &str) -> bool {
+    is_draft_folder(folder)
 }
 
 fn find_note_path_by_id(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
@@ -383,10 +392,15 @@ fn note_to_summary(
     document: &NoteDocument,
 ) -> Result<NoteSummary, String> {
     let folder_path = folder_path_from_note_path(app, path)?;
+    let relative_path = path
+        .strip_prefix(data_root_dir(app)?)
+        .map_err(|error| format!("failed to resolve note relative path: {error}"))?
+        .to_string_lossy()
+        .replace('\\', "/");
     Ok(NoteSummary {
         id: document.id.clone(),
         title: document.title.clone(),
-        relative_path: format!("notes/{folder_path}/{}.md", document.id),
+        relative_path,
         folder_path: folder_path.clone(),
         is_draft: is_draft_folder(&folder_path),
         is_trashed: is_trash_folder(&folder_path),
@@ -403,13 +417,18 @@ fn note_to_detail(
     document: NoteDocument,
 ) -> Result<NoteDetail, String> {
     let folder_path = folder_path_from_note_path(app, path)?;
+    let relative_path = path
+        .strip_prefix(data_root_dir(app)?)
+        .map_err(|error| format!("failed to resolve note relative path: {error}"))?
+        .to_string_lossy()
+        .replace('\\', "/");
     Ok(NoteDetail {
         id: document.id.clone(),
         title: document.title.clone(),
         content: document.content.clone(),
         created_at: document.created_at,
         updated_at: document.updated_at,
-        relative_path: format!("notes/{folder_path}/{}.md", document.id),
+        relative_path,
         folder_path: folder_path.clone(),
         is_draft: is_draft_folder(&folder_path),
         is_trashed: is_trash_folder(&folder_path),
@@ -470,7 +489,7 @@ fn collect_folders(app: &AppHandle) -> Result<Vec<String>, String> {
                 .strip_prefix(&root)
                 .map_err(|error| format!("failed to resolve folder relative path: {error}"))?;
 
-            let folder = relative.to_string_lossy().replace('\\', "/");
+            let folder = logical_notes_folder(relative);
             if !folder.is_empty() {
                 folders.push(folder);
             }
@@ -507,7 +526,7 @@ fn workspace_payload(app: &AppHandle) -> Result<WorkspacePayload, String> {
 
 fn folder_contains_notes(app: &AppHandle, folder: &str) -> Result<bool, String> {
     let normalized = normalize_folder_path(folder)?;
-    let target_dir = notes_dir(app)?.join(&normalized);
+    let target_dir = notes_folder_dir(app, &normalized)?;
     if !target_dir.exists() {
         return Ok(false);
     }
@@ -559,7 +578,7 @@ pub(crate) fn bootstrap_app(app: AppHandle) -> Result<BootstrapPayload, String> 
     seed_default_note(&app)?;
 
     Ok(BootstrapPayload {
-        vault_path: vault_dir(&app)?.display().to_string(),
+        vault_path: data_root_dir(&app)?.display().to_string(),
         notes: collect_notes(&app)?,
         folders: collect_folders(&app)?,
         settings: load_settings(&app)?,
@@ -629,7 +648,7 @@ pub(crate) fn create_folder(
     if is_inside_system_folder(&normalized) {
         return Err("cannot create inside system folder".to_string());
     }
-    let path = notes_dir(&app)?.join(&normalized);
+    let path = notes_folder_dir(&app, &normalized)?;
     fs::create_dir_all(path).map_err(|error| format!("failed to create folder: {error}"))?;
     collect_folders(&app)
 }
@@ -650,9 +669,8 @@ pub(crate) fn rename_folder(
         return Err("cannot create inside system folder".to_string());
     }
 
-    let root = notes_dir(&app)?;
-    let source = root.join(&from_path);
-    let target = root.join(&to_path);
+    let source = notes_folder_dir(&app, &from_path)?;
+    let target = notes_folder_dir(&app, &to_path)?;
 
     if !source.exists() {
         return Err("folder not found".to_string());
@@ -685,7 +703,7 @@ pub(crate) fn delete_folder(
         return Err("only empty folders can be deleted".to_string());
     }
 
-    let target = notes_dir(&app)?.join(&normalized);
+    let target = notes_folder_dir(&app, &normalized)?;
     if !target.exists() {
         return Err("folder not found".to_string());
     }
@@ -777,8 +795,7 @@ pub(crate) fn restore_note(app: AppHandle, id: String) -> Result<NoteDetail, Str
         _ => INBOX_FOLDER.to_string(),
     };
 
-    let notes_root = notes_dir(&app)?;
-    let target_folder = if notes_root.join(&target_folder).exists() {
+    let target_folder = if notes_folder_dir(&app, &target_folder)?.exists() {
         target_folder
     } else {
         INBOX_FOLDER.to_string()
@@ -825,6 +842,27 @@ pub(crate) fn delete_note(app: AppHandle, id: String) -> Result<Vec<NoteSummary>
 }
 
 #[tauri::command]
+pub(crate) fn discard_draft_note(app: AppHandle, id: String) -> Result<Vec<NoteSummary>, String> {
+    let path = find_note_path_by_id(&app, &id)?;
+    let current_folder = folder_path_from_note_path(&app, &path)?;
+
+    if !can_discard_draft(&current_folder) {
+        return Err("note must be a draft before discarding".to_string());
+    }
+
+    if path.exists() {
+        fs::remove_file(path).map_err(|error| format!("failed to discard draft: {error}"))?;
+    }
+
+    let notes = collect_notes(&app)?;
+    if notes.is_empty() {
+        seed_default_note(&app)?;
+    }
+
+    collect_notes(&app)
+}
+
+#[tauri::command]
 pub(crate) fn move_note(app: AppHandle, input: MoveNoteInput) -> Result<NoteDetail, String> {
     ensure_vault_layout(&app)?;
 
@@ -833,7 +871,7 @@ pub(crate) fn move_note(app: AppHandle, input: MoveNoteInput) -> Result<NoteDeta
         return Err("target folder is not allowed".to_string());
     }
 
-    let target_dir = notes_dir(&app)?.join(&target_folder);
+    let target_dir = notes_folder_dir(&app, &target_folder)?;
     if !target_dir.exists() {
         return Err("target folder not found".to_string());
     }
@@ -941,6 +979,14 @@ mod tests {
         assert!(!can_delete_note_permanently(INBOX_FOLDER));
         assert!(!can_delete_note_permanently(DRAFTS_FOLDER));
         assert!(!can_delete_note_permanently("projects/demo"));
+    }
+
+    #[test]
+    fn discard_draft_requires_drafts_folder() {
+        assert!(can_discard_draft(DRAFTS_FOLDER));
+        assert!(!can_discard_draft(INBOX_FOLDER));
+        assert!(!can_discard_draft(TRASH_FOLDER));
+        assert!(!can_discard_draft("projects/demo"));
     }
 
     #[test]

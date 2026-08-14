@@ -2263,7 +2263,7 @@ dependencies = [
 
 [[package]]
 name = "myvault"
-version = "0.1.7"
+version = "0.1.13"
 dependencies = [
  "image",
  "serde",
@@ -2275,6 +2275,8 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "uuid",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

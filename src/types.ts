@@ -51,6 +51,8 @@ export type AppSettings = {
     selectedNoteId: string;
   };
   persistentModules: string[];
+  closePlayerOnPause: boolean;
+  showMemoryInTitlebar: boolean;
 };
 
 export type ResourceUsage = {
@@ -114,7 +116,7 @@ export type AsmrFileItem = {
   name: string;
   relativePath: string;
   absolutePath: string;
-  kind: "folder" | "audio" | "subtitle";
+  kind: "folder" | "audio" | "subtitle" | "image" | "file";
   size: number;
   subtitlePath: string | null;
 };
@@ -123,4 +125,20 @@ export type AsmrFolderPayload = {
   rjId: string;
   folderPath: string;
   items: AsmrFileItem[];
+};
+
+export type PlayerTrack = {
+  id: string;
+  title: string;
+  workId: string;
+  workTitle: string;
+  absolutePath: string;
+  relativePath: string;
+  subtitlePath: string | null;
+};
+
+export type PlayerQueueRequest = {
+  source: "dl_asmr";
+  startIndex: number;
+  tracks: PlayerTrack[];
 };

@@ -197,6 +197,7 @@
 }
 
 .folder-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -718,6 +719,55 @@
   padding: 0 14px;
   background: #fff;
   color: var(--text-primary);
+}
+
+.folder-row:has(.folder-menu-shell) .note-group-header {
+  padding-right: 46px;
+}
+
+.folder-row:has(.folder-inline-actions) .note-group-header {
+  padding-right: 116px;
+}
+
+.notes-settings-dock {
+  flex: 0 0 auto;
+  padding: 8px 14px 12px;
+  display: grid;
+  grid-template-columns: 92px 132px;
+  gap: 6px;
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.notes-settings-button,
+.notes-player-button {
+  min-height: 36px;
+  width: 100%;
+  min-width: 0;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 10px;
+  color: #596273;
+  text-align: left;
+}
+
+.notes-settings-button svg,
+.notes-player-button svg {
+  flex: 0 0 auto;
+}
+
+.notes-settings-button span,
+.notes-player-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-settings-button:hover,
+.notes-player-button:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.52);
 }
 
 @media (max-width: 1280px) {

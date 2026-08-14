@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "asmr",
+  "description": "Capability for the standalone DL_ASMR module window",
+  "windows": ["asmr"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:default"
+  ]
+}

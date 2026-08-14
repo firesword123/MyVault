@@ -1,9 +1,23 @@
 [package]
 name = "myvault"
-version = "0.1.7"
+version = "0.1.13"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "myvault"
+autobins = false
+
+[[bin]]
+name = "myvault"
+path = "src/main.rs"
+
+[[bin]]
+name = "myvault-dl-asmr"
+path = "src/bin/myvault-asmr.rs"
+
+[[bin]]
+name = "myvault-gallery"
+path = "src/bin/myvault-gallery.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -27,3 +41,14 @@ tauri-plugin-updater = "2.10.1"
 tauri-plugin-process = "2.3.1"
 image = { version = "0.25.6", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 sysinfo = "0.30"
+uuid = { version = "1", features = ["v4"] }
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_JobObjects",
+  "Win32_System_Pipes",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }

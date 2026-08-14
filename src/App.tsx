@@ -1,5 +1,6 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
@@ -12,8 +13,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { AsmrWorkspace } from "./components/AsmrWorkspace";
 import { EditorWorkspace, NotesListPanel } from "./components/NotesWorkspace";
+import { PlayerWorkspace } from "./components/PlayerWorkspace";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShellFrame } from "./components/ShellFrame";
 import { resolveMessages } from "./i18n";
@@ -22,16 +23,13 @@ import { appUiSpec } from "./ui-spec";
 import { noteSignature, previewText } from "./utils";
 import "./styles/global.css";
 import "./styles/notes.css";
-import "./styles/asmr.css";
-
-type ModuleId = "notes" | "asmr";
+import "./styles/player.css";
 
 function normalizeFolderInput(folderPath: string) {
   return folderPath.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
 function App() {
-  const [activeModule, setActiveModule] = useState<ModuleId>("notes");
   const [settings, setSettings] = useState<AppSettings>({
     language: "zh-CN",
     showNoteTime: false,
@@ -46,6 +44,8 @@ function App() {
       selectedNoteId: "",
     },
     persistentModules: [],
+    closePlayerOnPause: false,
+    showMemoryInTitlebar: false,
   });
   const [vaultPath, setVaultPath] = useState("");
   const [notes, setNotes] = useState<NoteSummary[]>([]);
@@ -58,8 +58,9 @@ function App() {
   const [draftTargetFolders, setDraftTargetFolders] = useState<Record<string, string>>({});
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [playerOpen, setPlayerOpen] = useState(false);
   const [resourceUsage, setResourceUsage] = useState<ResourceUsage | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(290);
+  const [sidebarWidth, setSidebarWidth] = useState(258);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
   const [appVersion, setAppVersion] = useState("Resolving...");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
@@ -151,6 +152,21 @@ function App() {
   useEffect(() => {
     setUpdateStatus((current) => current || messages.updateIdleLabel);
   }, [messages]);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("player:replace-queue", () => {
+      if (!disposed) setPlayerOpen(true);
+    }).then((cleanup) => {
+      if (disposed) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
 
   useEffect(() => {
     setOpenFolders((current) => {
@@ -444,6 +460,37 @@ function App() {
     }
   }
 
+  async function restoreTrashedNote(noteId: string) {
+    try {
+      const restored = await invoke<NoteDetail>("restore_note", { id: noteId });
+      await refreshWorkspace();
+      if (activeNoteRef.current?.id === noteId) {
+        await openNote(restored.id);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNoteErrorMessage(mapNoteErrorMessage(message));
+    }
+  }
+
+  async function deleteTrashedNote(noteId: string) {
+    try {
+      await invoke<NoteSummary[]>("delete_note", { id: noteId });
+      const workspace = await refreshWorkspace();
+      if (activeNoteRef.current?.id === noteId) {
+        const next = workspace.notes.find((note) => !note.isTrashed && !note.isDraft) ?? workspace.notes[0];
+        if (next) await openNote(next.id);
+        else {
+          setActiveNote(null);
+          setSelectedNoteId("");
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setNoteErrorMessage(mapNoteErrorMessage(message));
+    }
+  }
+
   async function moveActiveNote(folderPath: string) {
     if (!activeNote || !folderPath) return;
     try {
@@ -503,6 +550,12 @@ function App() {
     setSettings(savedSettings);
   }
 
+  function runPlayerQuickAction() {
+    const action = settings.closePlayerOnPause ? "close" : "pause";
+    window.dispatchEvent(new CustomEvent("player:quick-action", { detail: action }));
+    if (action === "close") setPlayerOpen(false);
+  }
+
   async function handleUpdateAction() {
     if (updateBusy) return;
 
@@ -555,7 +608,7 @@ function App() {
   async function clearDraft() {
     if (!activeNote || activeNote.folderPath !== "drafts") return;
     try {
-      await invoke<NoteSummary[]>("delete_note", { id: activeNote.id });
+      await invoke<NoteSummary[]>("discard_draft_note", { id: activeNote.id });
       const workspace = await refreshWorkspace();
       setDraftTargetFolders((current) => {
         const next = { ...current };
@@ -622,7 +675,7 @@ function App() {
   }, [notesBooting, selectedNoteId]);
 
   useEffect(() => {
-    if (!settingsOpen) return;
+    if (!settingsOpen && !settings.showMemoryInTitlebar) return;
     let alive = true;
     const refresh = () => {
       void invoke<ResourceUsage>("get_resource_usage").then(
@@ -640,7 +693,7 @@ function App() {
       alive = false;
       window.clearInterval(interval);
     };
-  }, [settingsOpen]);
+  }, [settingsOpen, settings.showMemoryInTitlebar]);
 
   useEffect(() => {
     const theme = appUiSpec.theme;
@@ -689,7 +742,7 @@ function App() {
 
   const notesBodyContent = (
     <div
-      className="module-body notes-module-body"
+      className={`module-body notes-module-body workspace-view ${playerOpen ? "is-hidden" : "is-active"}`}
       style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}
       onKeyDown={handleEditorKeyDown}
     >
@@ -781,7 +834,9 @@ function App() {
                     },
                   )
           }
-          onEmptyTrash={() => void emptyTrash()}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onPlayerQuickAction={runPlayerQuickAction}
+          closePlayerOnPause={settings.closePlayerOnPause}
           showTime={settings.showNoteTime}
           openFolders={openFolders}
           onToggleFolder={(folderPath) =>
@@ -827,18 +882,22 @@ function App() {
         onEmptyTrash={() => void emptyTrash()}
         errorMessage={noteErrorMessage}
       />
+
     </div>
   );
-
-  const bodyContent = activeModule === "asmr" ? <AsmrWorkspace /> : notesBodyContent;
 
   return (
     <div className="app-shell">
       <ShellFrame
         spec={appUiSpec}
         messages={messages}
-        activeModule={activeModule}
-        bodyContent={bodyContent}
+        activeModule={playerOpen ? "player" : "notes"}
+        bodyContent={
+          <>
+            {notesBodyContent}
+            <PlayerWorkspace active={playerOpen} onBack={() => setPlayerOpen(false)} />
+          </>
+        }
         settingsPanel={
           <SettingsPanel
             open={settingsOpen}
@@ -849,6 +908,8 @@ function App() {
             updateActionDisabled={updateBusy}
             language={settings.language}
             showNoteTime={settings.showNoteTime}
+            showMemoryInTitlebar={settings.showMemoryInTitlebar}
+            closePlayerOnPause={settings.closePlayerOnPause}
             closeBehavior={settings.closeBehavior}
             httpProxy={settings.httpProxy}
             httpsProxy={settings.httpsProxy}
@@ -858,8 +919,13 @@ function App() {
             colorPresets={settings.colorPresets}
             colorPresetCount={settings.colorPresetCount}
             resourceUsage={resourceUsage}
+            trashNotes={notes
+              .filter((note) => note.isTrashed)
+              .sort((left, right) => (right.deletedAt ?? right.updatedAt) - (left.deletedAt ?? left.updatedAt))}
             onLanguageChange={(language) => void updateSettings({ ...settings, language })}
             onShowNoteTimeChange={(showNoteTime) => void updateSettings({ ...settings, showNoteTime })}
+            onShowMemoryInTitlebarChange={(showMemoryInTitlebar) => void updateSettings({ ...settings, showMemoryInTitlebar })}
+            onClosePlayerOnPauseChange={(closePlayerOnPause) => void updateSettings({ ...settings, closePlayerOnPause })}
             onCloseBehaviorChange={(closeBehavior) => void updateSettings({ ...settings, closeBehavior })}
             onHttpProxyChange={(httpProxy) => void updateSettings({ ...settings, httpProxy })}
             onHttpsProxyChange={(httpsProxy) => void updateSettings({ ...settings, httpsProxy })}
@@ -868,12 +934,29 @@ function App() {
             onColorPresetsChange={(colorPresets) => void updateSettings({ ...settings, colorPresets })}
             onColorPresetCountChange={(colorPresetCount) => void updateSettings({ ...settings, colorPresetCount })}
             onUpdateAction={() => void handleUpdateAction()}
+            onRestoreTrashNote={(noteId) => void restoreTrashedNote(noteId)}
+            onDeleteTrashNote={(noteId) => void deleteTrashedNote(noteId)}
             onClose={() => setSettingsOpen(false)}
           />
         }
+        showMemory={settings.showMemoryInTitlebar}
+        memoryBytes={resourceUsage?.totalMemoryBytes ?? null}
         onSelectModule={(moduleId) => {
-          if (moduleId === "notes" || moduleId === "asmr") {
-            setActiveModule(moduleId);
+          if (settingsOpen) setSettingsOpen(false);
+          if (moduleId === "notes") {
+            setPlayerOpen(false);
+          } else if (moduleId === "asmr") {
+            void invoke("launch_asmr_module").catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              window.alert(`DL_ASMR module failed to start: ${message}`);
+            });
+          } else if (moduleId === "gallery") {
+            void invoke("launch_gallery_module").catch((error) => {
+              const message = error instanceof Error ? error.message : String(error);
+              window.alert(`图库模块启动失败：${message}`);
+            });
+          } else if (moduleId === "player") {
+            setPlayerOpen(true);
           }
         }}
         onOpenSettings={() => setSettingsOpen((current) => !current)}

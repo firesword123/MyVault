@@ -1,14 +1,19 @@
 import { type ClipboardEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import {
   Bold,
+  Check,
   ChevronRight,
+  Copy,
   Folder,
   FolderPlus,
   MoreHorizontal,
   Palette,
+  Pause,
   PenLine,
   Pencil,
+  Settings,
   Trash2,
+  XCircle,
 } from "lucide-react";
 import type { NoteDetail, NoteSummary } from "../types";
 import type { LocaleMessages } from "../i18n";
@@ -33,7 +38,9 @@ type NotesListPanelProps = {
   onRefreshNote: (noteId: string) => void;
   onRevealNote: (note: NoteSummary) => void;
   onDeleteNote: (note: NoteSummary) => void;
-  onEmptyTrash: () => void;
+  onOpenSettings: () => void;
+  onPlayerQuickAction: () => void;
+  closePlayerOnPause: boolean;
   showTime: boolean;
   openFolders: Record<string, boolean>;
   onToggleFolder: (folderPath: string) => void;
@@ -280,14 +287,15 @@ export function NotesListPanel({
   onRefreshNote,
   onRevealNote,
   onDeleteNote,
-  onEmptyTrash,
+  onOpenSettings,
+  onPlayerQuickAction,
+  closePlayerOnPause,
   showTime,
   openFolders,
   onToggleFolder,
 }: NotesListPanelProps) {
   const groups = groupNotes(messages, folders, filteredNotes).filter((group) => group.key !== "drafts");
   const noteIndex = new Map(filteredNotes.map((note) => [note.id, note]));
-  const pinnedTrashGroup = groups.find((group) => group.key === "trash") ?? null;
   const mainGroups = groups.filter((group) => group.key !== "trash");
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
   const [activeMenuFolder, setActiveMenuFolder] = useState<string | null>(null);
@@ -299,13 +307,8 @@ export function NotesListPanel({
     x: number;
     y: number;
   } | null>(null);
-  const [trashContextMenu, setTrashContextMenu] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
   const menuShellRef = useRef<HTMLDivElement | null>(null);
   const noteContextMenuRef = useRef<HTMLDivElement | null>(null);
-  const trashContextMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -314,9 +317,6 @@ export function NotesListPanel({
       }
       if (!noteContextMenuRef.current?.contains(event.target as Node)) {
         setNoteContextMenu(null);
-      }
-      if (!trashContextMenuRef.current?.contains(event.target as Node)) {
-        setTrashContextMenu(null);
       }
     }
 
@@ -357,13 +357,11 @@ export function NotesListPanel({
     draggingNoteIdRef.current = null;
   }
 
-  function renderGroup(group: NoteGroup, options?: { pinnedTrash?: boolean }) {
-    const isPinnedTrash = options?.pinnedTrash === true;
-
+  function renderGroup(group: NoteGroup) {
     return (
       <section
         key={group.key}
-        className={`note-group ${isPinnedTrash ? "note-group-trash-dock" : ""}`}
+        className="note-group"
       >
         <div
           className="folder-row"
@@ -392,23 +390,14 @@ export function NotesListPanel({
             type="button"
             className={`note-group-header ${activeFolderPath === group.key ? "is-active" : ""} ${
               dragTargetFolder === group.key ? "is-drop-target" : ""
-            } ${isPinnedTrash ? "is-trash-folder" : ""}`}
+            }`}
             onClick={() => onToggleFolder(group.key)}
-            onContextMenu={(event) => {
-              if (!isPinnedTrash) return;
-              event.preventDefault();
-              const nextPosition = positionContextMenu(event.clientX, event.clientY, 180, 52);
-              setTrashContextMenu({
-                x: nextPosition.x,
-                y: nextPosition.y,
-              });
-            }}
           >
             <span className={`folder-caret ${openFolders[group.key] !== false ? "is-open" : ""}`}>
               <ChevronRight size={14} strokeWidth={1.8} />
             </span>
             <span className="folder-glyph">
-              {isPinnedTrash ? <Trash2 size={15} strokeWidth={1.8} /> : <Folder size={15} strokeWidth={1.8} />}
+              <Folder size={15} strokeWidth={1.8} />
             </span>
             <span>{group.label}</span>
           </button>
@@ -553,7 +542,17 @@ export function NotesListPanel({
           {mainGroups.map((group) => renderGroup(group))}
         </div>
 
-        {pinnedTrashGroup ? <div className="notes-trash-dock">{renderGroup(pinnedTrashGroup, { pinnedTrash: true })}</div> : null}
+      </div>
+
+      <div className="notes-settings-dock">
+        <button type="button" className="notes-settings-button" onClick={onOpenSettings}>
+          <Settings size={17} strokeWidth={1.8} />
+          <span>{messages.settingsTitle}</span>
+        </button>
+        <button type="button" className="notes-player-button" onClick={onPlayerQuickAction}>
+          {closePlayerOnPause ? <XCircle size={17} strokeWidth={1.8} /> : <Pause size={17} strokeWidth={1.8} />}
+          <span>{closePlayerOnPause ? messages.closePlayerButton : messages.pausePlayerButton}</span>
+        </button>
       </div>
 
       {folderModal ? (
@@ -638,27 +637,6 @@ export function NotesListPanel({
         </div>
       ) : null}
 
-      {trashContextMenu ? (
-        <div
-          ref={trashContextMenuRef}
-          className="note-context-menu"
-          style={{
-            left: `${trashContextMenu.x}px`,
-            top: `${trashContextMenu.y}px`,
-          }}
-        >
-          <button
-            type="button"
-            className="note-context-menu-item is-danger"
-            onClick={() => {
-              onEmptyTrash();
-              setTrashContextMenu(null);
-            }}
-          >
-            {messages.emptyTrashButton}
-          </button>
-        </div>
-      ) : null}
     </>
   );
 }
@@ -702,6 +680,8 @@ export function EditorWorkspace({
 }: EditorWorkspaceProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const colorInputRef = useRef<HTMLInputElement | null>(null);
+  const copyResetTimerRef = useRef<number | null>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
   useEffect(() => {
     const nextContent = toEditorHtml(activeNote?.content ?? "");
@@ -709,6 +689,16 @@ export function EditorWorkspace({
       editorRef.current.innerHTML = nextContent;
     }
   }, [activeNote?.id, activeNote?.content]);
+
+  useEffect(() => {
+    setCopyState("idle");
+    return () => {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+        copyResetTimerRef.current = null;
+      }
+    };
+  }, [activeNote?.id]);
 
   function emitEditorContent() {
     onContentChange(editorRef.current?.innerHTML ?? "");
@@ -729,6 +719,64 @@ export function EditorWorkspace({
     editorRef.current?.focus();
     document.execCommand(command, false, value);
     emitEditorContent();
+  }
+
+  function showCopyState(state: "copied" | "failed") {
+    setCopyState(state);
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+    }
+    copyResetTimerRef.current = window.setTimeout(() => {
+      setCopyState("idle");
+      copyResetTimerRef.current = null;
+    }, 1600);
+  }
+
+  function legacyCopyText(text: string) {
+    const input = document.createElement("textarea");
+    input.value = text;
+    input.setAttribute("readonly", "");
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    const copied = document.execCommand("copy");
+    input.remove();
+    return copied;
+  }
+
+  async function copyAllContent() {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const plainText = editor.innerText;
+    const richText = editor.innerHTML;
+
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
+            "text/html": new Blob([richText], { type: "text/html" }),
+          }),
+        ]);
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(plainText);
+      } else if (!legacyCopyText(plainText)) {
+        throw new Error("clipboard is unavailable");
+      }
+      showCopyState("copied");
+    } catch {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(plainText);
+        } else if (!legacyCopyText(plainText)) {
+          throw new Error("clipboard is unavailable");
+        }
+        showCopyState("copied");
+      } catch {
+        showCopyState("failed");
+      }
+    }
   }
 
   return (
@@ -793,6 +841,23 @@ export function EditorWorkspace({
                 title={messages.customColorButton}
               >
                 <Palette size={16} strokeWidth={1.9} />
+              </button>
+
+              <button
+                type="button"
+                className="soft-button"
+                onClick={() => void copyAllContent()}
+                aria-label={messages.copyContentButton}
+                title={messages.copyContentButton}
+              >
+                {copyState === "copied" ? <Check size={16} strokeWidth={2} /> : <Copy size={16} strokeWidth={1.9} />}
+                <span>
+                  {copyState === "copied"
+                    ? messages.contentCopiedLabel
+                    : copyState === "failed"
+                      ? messages.copyFailedLabel
+                      : messages.copyContentButton}
+                </span>
               </button>
 
               <input

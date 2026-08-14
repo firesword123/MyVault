@@ -1,11 +1,12 @@
 use crate::core::{
-    asmr_index_path, asmr_works_dir, atomic_write_utf8_file, ensure_vault_layout, now_ts,
-    read_utf8_file,
+    asmr_index_path, asmr_works_dir, atomic_write_utf8_file, data_root_dir, ensure_asmr_layout,
+    now_ts, read_utf8_file,
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 use tauri::AppHandle;
@@ -156,7 +157,7 @@ pub(crate) struct DeleteAsmrDictionaryInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SetAsmrCoverInput {
     rj_id: String,
-    source_path: String,
+    relative_path: String,
 }
 
 #[derive(Deserialize)]
@@ -166,9 +167,19 @@ pub(crate) struct ReadAsmrTextFileInput {
     relative_path: String,
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverStorageMigrationReport {
+    migrated_at: u64,
+    cleared_works: Vec<String>,
+    removed_legacy_covers: Vec<String>,
+    removed_thumbnails: Vec<String>,
+    preserved_ambiguous_covers: Vec<String>,
+}
+
 fn default_asmr_index() -> AsmrIndex {
     AsmrIndex {
-        version: 1,
+        version: crate::storage::DATA_SCHEMA_VERSION,
         works: Vec::new(),
         dictionaries: AsmrDictionaries::default(),
     }
@@ -201,8 +212,372 @@ fn load_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
         }
     };
     normalize_asmr_index(&mut index);
+    let repaired_paths = repair_0_1_9_work_paths(&mut index);
+    let cover_migration = migrate_legacy_cover_storage(app, &mut index)?;
     save_asmr_index(app, &index)?;
+    if let Some(report) = cover_migration {
+        write_cover_storage_migration_report(app, &report)?;
+    }
+    let archived_root_metadata = archive_misrouted_root_metadata(app, &index)?;
+    if !repaired_paths.is_empty() || !archived_root_metadata.is_empty() {
+        write_0_1_10_repair_report(app, &repaired_paths, &archived_root_metadata)?;
+    }
     Ok(index)
+}
+
+fn repair_0_1_9_work_paths(index: &mut AsmrIndex) -> Vec<String> {
+    let mut repaired = Vec::new();
+    for work in &mut index.works {
+        let Ok(rj_id) = normalize_rj_id(&work.rj_id) else {
+            continue;
+        };
+        let expected_work_dir = format!("DL_ASMR/{rj_id}");
+        let mut changed = false;
+        if work.work_dir.replace('\\', "/") == rj_id {
+            work.work_dir = expected_work_dir.clone();
+            changed = true;
+        }
+        if work.files_dir.replace('\\', "/") == rj_id {
+            work.files_dir = expected_work_dir.clone();
+            changed = true;
+        }
+        if let Some(cover_path) = work.cover_path.as_mut() {
+            let normalized = cover_path.replace('\\', "/");
+            let wrong_prefix = format!("{rj_id}/");
+            if normalized.starts_with(&wrong_prefix) {
+                *cover_path = format!("DL_ASMR/{normalized}");
+                changed = true;
+            }
+        }
+        if changed {
+            repaired.push(rj_id);
+        }
+    }
+    repaired.sort();
+    repaired.dedup();
+    repaired
+}
+
+fn archive_misrouted_root_metadata(
+    app: &AppHandle,
+    index: &AsmrIndex,
+) -> Result<Vec<String>, String> {
+    let root = data_root_dir(app)?;
+    archive_misrouted_root_metadata_at(&root, index)
+}
+
+fn archive_misrouted_root_metadata_at(
+    root: &Path,
+    index: &AsmrIndex,
+) -> Result<Vec<String>, String> {
+    let mut archived = Vec::new();
+    for work in &index.works {
+        let Ok(rj_id) = normalize_rj_id(&work.rj_id) else {
+            continue;
+        };
+        let source_dir = root.join(&rj_id);
+        let correct_dir = root.join("DL_ASMR").join(&rj_id);
+        if !source_dir.is_dir() || !correct_dir.is_dir() {
+            continue;
+        }
+
+        let entries = fs::read_dir(&source_dir)
+            .map_err(|error| format!("failed to inspect misplaced {rj_id} metadata: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to inspect misplaced {rj_id} metadata: {error}"))?;
+        let safe = entries.iter().all(|entry| {
+            entry
+                .file_type()
+                .map(|kind| kind.is_file())
+                .unwrap_or(false)
+                && matches!(
+                    entry.file_name().to_string_lossy().as_ref(),
+                    "_Work.json" | "_Work.json.bak"
+                )
+        });
+        if !safe {
+            continue;
+        }
+
+        let backup_dir = root
+            .join("_MyVault/Backups/Repair-0.1.10/UnexpectedRootWorkMetadata")
+            .join(&rj_id);
+        fs::create_dir_all(&backup_dir)
+            .map_err(|error| format!("failed to create repair backup for {rj_id}: {error}"))?;
+        for entry in entries {
+            let mut target = backup_dir.join(entry.file_name());
+            if target.exists() {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                target = backup_dir.join(format!("{file_name}-{}", uuid::Uuid::new_v4()));
+            }
+            fs::rename(entry.path(), &target).map_err(|error| {
+                format!("failed to archive misplaced {rj_id} metadata: {error}")
+            })?;
+        }
+        fs::remove_dir(&source_dir).map_err(|error| {
+            format!("failed to remove empty misplaced {rj_id} directory: {error}")
+        })?;
+        archived.push(rj_id);
+    }
+    archived.sort();
+    archived.dedup();
+    Ok(archived)
+}
+
+fn write_0_1_10_repair_report(
+    app: &AppHandle,
+    repaired_paths: &[String],
+    archived_root_metadata: &[String],
+) -> Result<(), String> {
+    let repaired_at = now_ts();
+    let path = data_root_dir(app)?
+        .join("_MyVault/RepairReports")
+        .join(format!("dl-asmr-paths-0.1.10-{repaired_at}.json"));
+    let raw = serde_json::to_string_pretty(&serde_json::json!({
+        "version": "0.1.10",
+        "repairedAt": repaired_at,
+        "repairedLibraryPaths": repaired_paths,
+        "archivedUnexpectedRootMetadata": archived_root_metadata,
+    }))
+    .map_err(|error| format!("failed to serialize DL_ASMR repair report: {error}"))?;
+    atomic_write_utf8_file(&path, &raw)
+        .map_err(|error| format!("failed to save DL_ASMR repair report: {error}"))
+}
+
+fn cover_storage_migration_path(root: &Path) -> PathBuf {
+    root.join("_MyVault/Migrations/DL_ASMR-CoverPaths-v2.json")
+}
+
+fn is_legacy_cover_name(name: &str) -> bool {
+    let path = Path::new(name);
+    path.file_stem()
+        .map(|stem| stem.to_string_lossy().eq_ignore_ascii_case("_Cover"))
+        .unwrap_or(false)
+        && path
+            .extension()
+            .map(|extension| is_cover_extension(&extension.to_string_lossy()))
+            .unwrap_or(false)
+}
+
+fn indexed_legacy_cover_name(stored_path: &str, rj_id: &str) -> Option<String> {
+    let normalized = stored_path.replace('\\', "/");
+    let prefix = format!("DL_ASMR/{rj_id}/");
+    if normalized.len() <= prefix.len()
+        || !normalized
+            .get(..prefix.len())
+            .map(|value| value.eq_ignore_ascii_case(&prefix))
+            .unwrap_or(false)
+    {
+        return None;
+    }
+    let name = &normalized[prefix.len()..];
+    (!name.contains('/') && is_legacy_cover_name(name)).then(|| name.to_string())
+}
+
+fn relative_report_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn files_are_equal(left: &Path, right: &Path) -> Result<bool, String> {
+    let left_metadata = fs::metadata(left)
+        .map_err(|error| format!("failed to inspect {}: {error}", left.display()))?;
+    let right_metadata = fs::metadata(right)
+        .map_err(|error| format!("failed to inspect {}: {error}", right.display()))?;
+    if left_metadata.len() != right_metadata.len() {
+        return Ok(false);
+    }
+
+    let mut left_file = fs::File::open(left)
+        .map_err(|error| format!("failed to read {}: {error}", left.display()))?;
+    let mut right_file = fs::File::open(right)
+        .map_err(|error| format!("failed to read {}: {error}", right.display()))?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_read = left_file
+            .read(&mut left_buffer)
+            .map_err(|error| format!("failed to read {}: {error}", left.display()))?;
+        let right_read = right_file
+            .read(&mut right_buffer)
+            .map_err(|error| format!("failed to read {}: {error}", right.display()))?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn legacy_cover_has_user_copy(work_dir: &Path, legacy_cover: &Path) -> Result<bool, String> {
+    if !is_supported_image_file(legacy_cover) {
+        return Ok(false);
+    }
+    let legacy_size = fs::metadata(legacy_cover)
+        .map_err(|error| format!("failed to inspect {}: {error}", legacy_cover.display()))?
+        .len();
+    let mut directories = VecDeque::from([work_dir.to_path_buf()]);
+    while let Some(directory) = directories.pop_front() {
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| format!("failed to inspect {}: {error}", directory.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to inspect {}: {error}", directory.display()))?;
+        entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+            if file_type.is_dir() {
+                directories.push_back(path);
+                continue;
+            }
+            if !file_type.is_file() || path == legacy_cover {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.eq_ignore_ascii_case("_Work.json")
+                || name.eq_ignore_ascii_case("_Work.json.bak")
+                || is_legacy_cover_name(&name)
+            {
+                continue;
+            }
+            if entry.metadata().map(|metadata| metadata.len()).unwrap_or(0) == legacy_size
+                && is_supported_image_file(&path)
+                && files_are_equal(legacy_cover, &path)?
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_legacy_cover_storage(
+    app: &AppHandle,
+    index: &mut AsmrIndex,
+) -> Result<Option<CoverStorageMigrationReport>, String> {
+    let root = data_root_dir(app)?;
+    migrate_legacy_cover_storage_at(&root, index)
+}
+
+fn migrate_legacy_cover_storage_at(
+    root: &Path,
+    index: &mut AsmrIndex,
+) -> Result<Option<CoverStorageMigrationReport>, String> {
+    if cover_storage_migration_path(root).exists() {
+        return Ok(None);
+    }
+
+    let mut report = CoverStorageMigrationReport {
+        migrated_at: now_ts(),
+        ..CoverStorageMigrationReport::default()
+    };
+    for work in &mut index.works {
+        let rj_id = normalize_rj_id(&work.rj_id)?;
+        let work_dir = root.join("DL_ASMR").join(&rj_id);
+        let indexed_legacy_name = work
+            .cover_path
+            .as_deref()
+            .and_then(|path| indexed_legacy_cover_name(path, &rj_id));
+        if indexed_legacy_name.is_some() {
+            work.cover_path = None;
+            report.cleared_works.push(rj_id.clone());
+        }
+        if work.thumbnail_path.take().is_some() {
+            report.cleared_works.push(rj_id.clone());
+        }
+
+        let thumbnail = root
+            .join("_MyVault/Index/DL_ASMR/Thumbnails")
+            .join(format!("{rj_id}.jpg"));
+        if thumbnail.is_file() {
+            fs::remove_file(&thumbnail).map_err(|error| {
+                format!(
+                    "failed to remove legacy DL_ASMR thumbnail {}: {error}",
+                    thumbnail.display()
+                )
+            })?;
+            report
+                .removed_thumbnails
+                .push(relative_report_path(root, &thumbnail));
+        }
+
+        if !work_dir.is_dir() {
+            continue;
+        }
+        let entries = fs::read_dir(&work_dir)
+            .map_err(|error| format!("failed to inspect {}: {error}", work_dir.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to inspect {}: {error}", work_dir.display()))?;
+        for entry in entries {
+            let path = entry.path();
+            if !entry
+                .file_type()
+                .map(|file_type| file_type.is_file())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !is_legacy_cover_name(&name) {
+                continue;
+            }
+            let indexed = indexed_legacy_name
+                .as_deref()
+                .map(|indexed_name| indexed_name.eq_ignore_ascii_case(&name))
+                .unwrap_or(false);
+            if indexed || legacy_cover_has_user_copy(&work_dir, &path)? {
+                fs::remove_file(&path).map_err(|error| {
+                    format!(
+                        "failed to remove legacy DL_ASMR cover {}: {error}",
+                        path.display()
+                    )
+                })?;
+                report
+                    .removed_legacy_covers
+                    .push(relative_report_path(root, &path));
+            } else {
+                report
+                    .preserved_ambiguous_covers
+                    .push(relative_report_path(root, &path));
+            }
+        }
+    }
+
+    report.cleared_works.sort();
+    report.cleared_works.dedup();
+    report.removed_legacy_covers.sort();
+    report.removed_thumbnails.sort();
+    report.preserved_ambiguous_covers.sort();
+    for directory in [
+        root.join("_MyVault/Index/DL_ASMR/Thumbnails"),
+        root.join("_MyVault/Index/DL_ASMR"),
+        root.join("_MyVault/Index"),
+    ] {
+        if directory.is_dir()
+            && fs::read_dir(&directory)
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(false)
+        {
+            let _ = fs::remove_dir(&directory);
+        }
+    }
+    Ok(Some(report))
+}
+
+fn write_cover_storage_migration_report(
+    app: &AppHandle,
+    report: &CoverStorageMigrationReport,
+) -> Result<(), String> {
+    let path = cover_storage_migration_path(&data_root_dir(app)?);
+    let raw = serde_json::to_string_pretty(report)
+        .map_err(|error| format!("failed to serialize cover storage migration: {error}"))?;
+    atomic_write_utf8_file(&path, &raw)
+        .map_err(|error| format!("failed to save cover storage migration report: {error}"))
 }
 
 fn save_asmr_index(app: &AppHandle, index: &AsmrIndex) -> Result<(), String> {
@@ -211,11 +586,21 @@ fn save_asmr_index(app: &AppHandle, index: &AsmrIndex) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(&normalized)
         .map_err(|error| format!("failed to serialize asmr index: {error}"))?;
     atomic_write_utf8_file(&asmr_index_path(app)?, &raw)
-        .map_err(|error| format!("failed to save asmr index: {error}"))
+        .map_err(|error| format!("failed to save DL_ASMR index: {error}"))?;
+    for work in &normalized.works {
+        let work_dir = stored_path(app, &work.work_dir)?;
+        fs::create_dir_all(&work_dir)
+            .map_err(|error| format!("failed to create DL_ASMR work directory: {error}"))?;
+        let work_raw = serde_json::to_string_pretty(work)
+            .map_err(|error| format!("failed to serialize DL_ASMR work: {error}"))?;
+        atomic_write_utf8_file(&work_dir.join("_Work.json"), &work_raw)
+            .map_err(|error| format!("failed to save DL_ASMR work metadata: {error}"))?;
+    }
+    Ok(())
 }
 
 fn normalize_asmr_index(index: &mut AsmrIndex) {
-    index.version = 1;
+    index.version = crate::storage::DATA_SCHEMA_VERSION;
     index
         .works
         .sort_by(|left, right| left.rj_id.cmp(&right.rj_id));
@@ -394,9 +779,14 @@ fn validate_relative_path(path: &str) -> Result<String, String> {
         return Ok(String::new());
     }
 
+    let candidate = Path::new(&normalized);
     let valid = normalized
         .split('/')
-        .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+        .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+        && !candidate.is_absolute()
+        && candidate
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)));
     if valid {
         Ok(normalized)
     } else {
@@ -404,12 +794,54 @@ fn validate_relative_path(path: &str) -> Result<String, String> {
     }
 }
 
+fn stored_path(app: &AppHandle, value: &str) -> Result<PathBuf, String> {
+    let relative = validate_relative_path(value)?;
+    if relative.is_empty() {
+        return Err("stored DL_ASMR path is empty".to_string());
+    }
+    Ok(data_root_dir(app)?.join(relative))
+}
+
+fn frontend_absolute_path(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(network_path) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{network_path}")
+    } else if let Some(local_path) = value.strip_prefix(r"\\?\") {
+        local_path.to_string()
+    } else {
+        value.into_owned()
+    }
+}
+
+fn relative_data_path(app: &AppHandle, path: &Path) -> Result<String, String> {
+    path.strip_prefix(data_root_dir(app)?)
+        .map_err(|error| format!("failed to make DL_ASMR path relative: {error}"))
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+}
+
+fn hydrate_work(app: &AppHandle, work: &AsmrWork) -> Result<AsmrWork, String> {
+    let mut hydrated = work.clone();
+    hydrated.work_dir = frontend_absolute_path(&stored_path(app, &work.work_dir)?);
+    hydrated.files_dir = frontend_absolute_path(&stored_path(app, &work.files_dir)?);
+    hydrated.cover_path = work
+        .cover_path
+        .as_deref()
+        .map(|path| stored_path(app, path).map(|value| frontend_absolute_path(&value)))
+        .transpose()?;
+    hydrated.thumbnail_path = work
+        .thumbnail_path
+        .as_deref()
+        .map(|path| stored_path(app, path).map(|value| frontend_absolute_path(&value)))
+        .transpose()?;
+    Ok(hydrated)
+}
+
 fn asmr_work_dir(app: &AppHandle, rj_id: &str) -> Result<PathBuf, String> {
     Ok(asmr_works_dir(app)?.join(normalize_rj_id(rj_id)?))
 }
 
 fn asmr_work_files_dir(app: &AppHandle, rj_id: &str) -> Result<PathBuf, String> {
-    Ok(asmr_work_dir(app, rj_id)?.join("files"))
+    asmr_work_dir(app, rj_id)
 }
 
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
@@ -456,18 +888,28 @@ fn is_subtitle_extension(extension: &str) -> bool {
     )
 }
 
-fn asmr_file_kind(path: &Path) -> Option<String> {
+fn asmr_file_kind(path: &Path) -> String {
     if path.is_dir() {
-        return Some("folder".to_string());
+        return "folder".to_string();
     }
-    let extension = path.extension()?.to_string_lossy();
+    if is_supported_image_file(path) {
+        return "image".to_string();
+    }
+    let extension = path
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_string())
+        .unwrap_or_default();
     if is_audio_extension(&extension) {
-        Some("audio".to_string())
+        "audio".to_string()
     } else if is_subtitle_extension(&extension) {
-        Some("subtitle".to_string())
+        "subtitle".to_string()
     } else {
-        None
+        "file".to_string()
     }
+}
+
+fn should_hide_work_file(name: &str) -> bool {
+    name.eq_ignore_ascii_case("_Work.json")
 }
 
 fn subtitle_for_audio(root: &Path, path: &Path) -> Option<String> {
@@ -500,35 +942,77 @@ fn is_cover_extension(extension: &str) -> bool {
     )
 }
 
-fn is_image_extension(extension: &str) -> bool {
-    is_cover_extension(extension)
+fn supported_image_format(path: &Path) -> Option<image::ImageFormat> {
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let format = reader.format()?;
+    matches!(
+        format,
+        image::ImageFormat::Jpeg
+            | image::ImageFormat::Png
+            | image::ImageFormat::Gif
+            | image::ImageFormat::WebP
+            | image::ImageFormat::Bmp
+    )
+    .then_some(format)
 }
 
-fn copy_asmr_cover(source: &Path, work_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
-    if !source.is_file() {
-        return Err("cover source must be a file".to_string());
+fn is_supported_image_file(path: &Path) -> bool {
+    path.is_file() && supported_image_format(path).is_some()
+}
+
+fn find_first_image_file(root: &Path) -> Result<Option<PathBuf>, String> {
+    let mut directories = VecDeque::from([root.to_path_buf()]);
+    while let Some(directory) = directories.pop_front() {
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| {
+                format!(
+                    "failed to scan {} for cover images: {error}",
+                    directory.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!(
+                    "failed to scan {} for cover images: {error}",
+                    directory.display()
+                )
+            })?;
+        entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+
+        for entry in &entries {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?;
+            if !file_type.is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.eq_ignore_ascii_case("_Work.json")
+                || name.eq_ignore_ascii_case("_Work.json.bak")
+                || is_legacy_cover_name(&name)
+            {
+                continue;
+            }
+            if is_supported_image_file(&path) {
+                return Ok(Some(path));
+            }
+        }
+        for entry in entries {
+            let path = entry.path();
+            if entry
+                .file_type()
+                .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
+                .is_dir()
+            {
+                directories.push_back(path);
+            }
+        }
     }
-    let extension = source
-        .extension()
-        .map(|extension| extension.to_string_lossy().to_string())
-        .ok_or_else(|| "cover file must have an extension".to_string())?;
-    if !is_cover_extension(&extension) {
-        return Err("unsupported cover format".to_string());
-    }
-
-    fs::create_dir_all(work_dir).map_err(|error| format!("failed to create work dir: {error}"))?;
-    let cover_path = work_dir.join(format!("cover.{}", extension.to_ascii_lowercase()));
-    fs::copy(source, &cover_path).map_err(|error| format!("failed to copy cover: {error}"))?;
-
-    let thumbnail_path = work_dir.join("thumb.jpg");
-    let image =
-        image::open(&cover_path).map_err(|error| format!("failed to read cover image: {error}"))?;
-    let thumbnail = image.thumbnail(480, 480);
-    thumbnail
-        .save_with_format(&thumbnail_path, image::ImageFormat::Jpeg)
-        .map_err(|error| format!("failed to save cover thumbnail: {error}"))?;
-
-    Ok((cover_path, thumbnail_path))
+    Ok(None)
 }
 
 fn find_default_asmr_folder(files_dir: &Path) -> Result<Option<String>, String> {
@@ -615,7 +1099,7 @@ fn scan_asmr_import_source(
                 }
             } else if is_subtitle_extension(&extension) {
                 subtitle_count += 1;
-            } else if is_image_extension(&extension) {
+            } else if is_supported_image_file(&path) {
                 image_count += 1;
             } else {
                 other_count += 1;
@@ -637,10 +1121,14 @@ fn scan_asmr_import_source(
 
 #[tauri::command]
 pub(crate) fn bootstrap_asmr(app: AppHandle) -> Result<AsmrBootstrapPayload, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let index = load_asmr_index(&app)?;
     Ok(AsmrBootstrapPayload {
-        works: index.works,
+        works: index
+            .works
+            .iter()
+            .map(|work| hydrate_work(&app, work))
+            .collect::<Result<Vec<_>, _>>()?,
         dictionaries: index.dictionaries,
     })
 }
@@ -650,7 +1138,7 @@ pub(crate) fn preview_asmr_import(
     app: AppHandle,
     input: PreviewAsmrImportInput,
 ) -> Result<AsmrImportPreview, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let source = PathBuf::from(input.source_path);
     if !source.is_dir() {
         return Err("source path must be a directory".to_string());
@@ -688,11 +1176,18 @@ pub(crate) fn preview_asmr_import(
     })
 }
 
-fn asmr_payload_from_index(index: AsmrIndex) -> AsmrBootstrapPayload {
-    AsmrBootstrapPayload {
-        works: index.works,
+fn asmr_payload_from_index(
+    app: &AppHandle,
+    index: AsmrIndex,
+) -> Result<AsmrBootstrapPayload, String> {
+    Ok(AsmrBootstrapPayload {
+        works: index
+            .works
+            .iter()
+            .map(|work| hydrate_work(app, work))
+            .collect::<Result<Vec<_>, _>>()?,
         dictionaries: index.dictionaries,
-    }
+    })
 }
 
 #[tauri::command]
@@ -700,7 +1195,7 @@ pub(crate) fn import_asmr_work(
     app: AppHandle,
     input: ImportAsmrWorkInput,
 ) -> Result<AsmrWork, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let source = PathBuf::from(input.source_path);
     if !source.is_dir() {
         return Err("source path must be a directory".to_string());
@@ -718,16 +1213,37 @@ pub(crate) fn import_asmr_work(
     }
 
     let work_dir = asmr_work_dir(&app, &rj_id)?;
-    if work_dir.exists() {
-        if overwrite {
-            fs::remove_dir_all(&work_dir)
-                .map_err(|error| format!("failed to replace work dir: {error}"))?;
-        } else {
-            return Err("asmr work directory already exists".to_string());
-        }
+    if work_dir.exists() && !overwrite {
+        return Err("DL_ASMR work directory already exists".to_string());
     }
-    let files_dir = work_dir.join("files");
-    copy_dir_recursive(&source, &files_dir)?;
+    let importing_dir = data_root_dir(&app)?
+        .join("_MyVault/Importing")
+        .join(format!("{}-{}", rj_id, uuid::Uuid::new_v4()));
+    copy_dir_recursive(&source, &importing_dir)?;
+
+    let mut backup_path = None;
+    if work_dir.exists() {
+        let backup = data_root_dir(&app)?
+            .join("_MyVault/Backups/DL_ASMR")
+            .join(format!("{}-{}", rj_id, now_ts()));
+        if let Some(parent) = backup.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to prepare DL_ASMR backup: {error}"))?;
+        }
+        fs::rename(&work_dir, &backup)
+            .map_err(|error| format!("failed to preserve previous DL_ASMR work: {error}"))?;
+        backup_path = Some(backup);
+    }
+    if let Err(error) = fs::rename(&importing_dir, &work_dir) {
+        if let Some(backup) = backup_path {
+            let _ = fs::rename(backup, &work_dir);
+        }
+        return Err(format!("failed to activate imported DL_ASMR work: {error}"));
+    }
+    let files_dir = work_dir.clone();
+    let auto_cover_path = find_first_image_file(&files_dir)?
+        .map(|path| relative_data_path(&app, &path))
+        .transpose()?;
 
     let ts = now_ts();
     let title = input
@@ -752,9 +1268,9 @@ pub(crate) fn import_asmr_work(
         favorite: false,
         rating: None,
         note: String::new(),
-        work_dir: work_dir.display().to_string(),
-        files_dir: files_dir.display().to_string(),
-        cover_path: None,
+        work_dir: relative_data_path(&app, &work_dir)?,
+        files_dir: relative_data_path(&app, &files_dir)?,
+        cover_path: auto_cover_path,
         thumbnail_path: None,
         last_opened_folder: find_default_asmr_folder(&files_dir)?,
         last_played_audio_path: None,
@@ -766,7 +1282,7 @@ pub(crate) fn import_asmr_work(
     index.works.retain(|item| item.rj_id != rj_id);
     index.works.push(work.clone());
     save_asmr_index(&app, &index)?;
-    Ok(work)
+    hydrate_work(&app, &work)
 }
 
 #[tauri::command]
@@ -774,7 +1290,7 @@ pub(crate) fn update_asmr_work(
     app: AppHandle,
     input: UpdateAsmrWorkInput,
 ) -> Result<AsmrWork, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let mut index = load_asmr_index(&app)?;
     let work = index
@@ -795,7 +1311,7 @@ pub(crate) fn update_asmr_work(
 
     let updated = work.clone();
     save_asmr_index(&app, &index)?;
-    Ok(updated)
+    hydrate_work(&app, &updated)
 }
 
 #[tauri::command]
@@ -803,7 +1319,7 @@ pub(crate) fn upsert_asmr_dictionary(
     app: AppHandle,
     input: UpsertAsmrDictionaryInput,
 ) -> Result<AsmrBootstrapPayload, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let value = input.value.trim().to_string();
     if value.is_empty() {
         return Err("dictionary value is required".to_string());
@@ -828,7 +1344,7 @@ pub(crate) fn upsert_asmr_dictionary(
         }
     }
     save_asmr_index(&app, &index)?;
-    Ok(asmr_payload_from_index(load_asmr_index(&app)?))
+    asmr_payload_from_index(&app, load_asmr_index(&app)?)
 }
 
 #[tauri::command]
@@ -836,7 +1352,7 @@ pub(crate) fn delete_asmr_dictionary(
     app: AppHandle,
     input: DeleteAsmrDictionaryInput,
 ) -> Result<AsmrBootstrapPayload, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let value = input.value.trim().to_string();
     if value.is_empty() {
         return Err("dictionary value is required".to_string());
@@ -851,7 +1367,7 @@ pub(crate) fn delete_asmr_dictionary(
         delete_asmr_work_dictionary_value(work, &input.kind, &value);
     }
     save_asmr_index(&app, &index)?;
-    Ok(asmr_payload_from_index(load_asmr_index(&app)?))
+    asmr_payload_from_index(&app, load_asmr_index(&app)?)
 }
 
 #[tauri::command]
@@ -859,7 +1375,7 @@ pub(crate) fn list_asmr_folder(
     app: AppHandle,
     input: ListAsmrFolderInput,
 ) -> Result<AsmrFolderPayload, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let folder_path = validate_relative_path(&input.folder_path)?;
     let root = asmr_work_files_dir(&app, &rj_id)?;
@@ -890,10 +1406,11 @@ pub(crate) fn list_asmr_folder(
     {
         let entry = entry.map_err(|error| format!("failed to read asmr folder entry: {error}"))?;
         let path = entry.path();
-        let Some(kind) = asmr_file_kind(&path) else {
-            continue;
-        };
         let name = entry.file_name().to_string_lossy().to_string();
+        if should_hide_work_file(&name) {
+            continue;
+        }
+        let kind = asmr_file_kind(&path);
         let relative_path = path
             .strip_prefix(&root)
             .map_err(|error| format!("failed to resolve asmr file path: {error}"))?
@@ -908,7 +1425,7 @@ pub(crate) fn list_asmr_folder(
         items.push(AsmrFileItem {
             name,
             relative_path,
-            absolute_path: path.display().to_string(),
+            absolute_path: frontend_absolute_path(&path),
             kind,
             size,
             subtitle_path,
@@ -920,15 +1437,23 @@ pub(crate) fn list_asmr_folder(
             0
         } else if left.kind == "audio" {
             1
-        } else {
+        } else if left.kind == "image" {
             2
+        } else if left.kind == "subtitle" {
+            3
+        } else {
+            4
         };
         let right_rank = if right.kind == "folder" {
             0
         } else if right.kind == "audio" {
             1
-        } else {
+        } else if right.kind == "image" {
             2
+        } else if right.kind == "subtitle" {
+            3
+        } else {
+            4
         };
         left_rank
             .cmp(&right_rank)
@@ -947,7 +1472,7 @@ pub(crate) fn update_asmr_playback(
     app: AppHandle,
     input: UpdateAsmrPlaybackInput,
 ) -> Result<AsmrWork, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let audio_path = validate_relative_path(&input.audio_path)?;
     let mut index = load_asmr_index(&app)?;
@@ -961,33 +1486,53 @@ pub(crate) fn update_asmr_playback(
     work.updated_at = now_ts();
     let updated = work.clone();
     save_asmr_index(&app, &index)?;
-    Ok(updated)
+    hydrate_work(&app, &updated)
 }
 
 #[tauri::command]
 pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result<AsmrWork, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
-    let source = PathBuf::from(input.source_path);
+    let relative_path = validate_relative_path(&input.relative_path)?;
+    if relative_path.is_empty() {
+        return Err("cover path is required".to_string());
+    }
+    let file_name = Path::new(&relative_path)
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .ok_or_else(|| "cover path must identify a file".to_string())?;
+    if is_legacy_cover_name(&file_name) {
+        return Err("legacy _Cover files cannot be selected as cover".to_string());
+    }
+    let work_dir = asmr_work_dir(&app, &rj_id)?;
+    let source = work_dir.join(&relative_path);
+    if !source.is_file() || !is_supported_image_file(&source) {
+        return Err("selected work file is not a supported image".to_string());
+    }
+    let canonical_work_dir = fs::canonicalize(&work_dir)
+        .map_err(|error| format!("failed to resolve work directory: {error}"))?;
+    let canonical_source = fs::canonicalize(&source)
+        .map_err(|error| format!("failed to resolve cover image: {error}"))?;
+    if !canonical_source.starts_with(&canonical_work_dir) {
+        return Err("cover image must stay inside the work directory".to_string());
+    }
+
     let mut index = load_asmr_index(&app)?;
     if !index.works.iter().any(|work| work.rj_id == rj_id) {
         return Err("asmr work not found".to_string());
     }
-
-    let work_dir = asmr_work_dir(&app, &rj_id)?;
-    let (cover_path, thumbnail_path) = copy_asmr_cover(&source, &work_dir)?;
 
     let work = index
         .works
         .iter_mut()
         .find(|work| work.rj_id == rj_id)
         .ok_or_else(|| "asmr work not found".to_string())?;
-    work.cover_path = Some(cover_path.display().to_string());
-    work.thumbnail_path = Some(thumbnail_path.display().to_string());
+    work.cover_path = Some(relative_data_path(&app, &source)?);
+    work.thumbnail_path = None;
     work.updated_at = now_ts();
     let updated = work.clone();
     save_asmr_index(&app, &index)?;
-    Ok(updated)
+    hydrate_work(&app, &updated)
 }
 
 #[tauri::command]
@@ -995,7 +1540,7 @@ pub(crate) fn read_asmr_text_file(
     app: AppHandle,
     input: ReadAsmrTextFileInput,
 ) -> Result<String, String> {
-    ensure_vault_layout(&app)?;
+    ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let relative_path = validate_relative_path(&input.relative_path)?;
     let root = asmr_work_files_dir(&app, &rj_id)?;
@@ -1011,4 +1556,225 @@ pub(crate) fn read_asmr_text_file(
         return Err("text file not found".to_string());
     }
     read_utf8_file(&path).map_err(|error| format!("failed to read text file: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_work() -> AsmrWork {
+        AsmrWork {
+            rj_id: "RJ123".to_string(),
+            title: "Work".to_string(),
+            circle: String::new(),
+            voice_actors: Vec::new(),
+            tags: Vec::new(),
+            status: "new".to_string(),
+            favorite: false,
+            rating: None,
+            note: String::new(),
+            work_dir: "RJ123".to_string(),
+            files_dir: "RJ123".to_string(),
+            cover_path: Some("RJ123/_Cover.png".to_string()),
+            thumbnail_path: Some("_MyVault/Index/DL_ASMR/Thumbnails/RJ123.jpg".to_string()),
+            last_opened_folder: None,
+            last_played_audio_path: None,
+            last_position_ms: 0,
+            imported_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn sample_index() -> AsmrIndex {
+        AsmrIndex {
+            version: 2,
+            works: vec![sample_work()],
+            dictionaries: AsmrDictionaries::default(),
+        }
+    }
+
+    fn temp_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("myvault-asmr-{label}-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn write_test_image(path: &Path, format: image::ImageFormat, size: u32) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        image::DynamicImage::new_rgba8(size, size)
+            .save_with_format(path, format)
+            .unwrap();
+    }
+
+    #[test]
+    fn detects_supported_images_from_contents_instead_of_extension() {
+        let root = temp_root("image-header");
+        let disguised_webp = root.join("cover.jpg");
+        write_test_image(&disguised_webp, image::ImageFormat::WebP, 2);
+
+        assert_eq!(
+            supported_image_format(&disguised_webp),
+            Some(image::ImageFormat::WebP)
+        );
+        assert_eq!(asmr_file_kind(&disguised_webp), "image");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_cover_scan_is_sorted_and_prefers_the_current_directory() {
+        let root = temp_root("cover-scan");
+        write_test_image(
+            &root.join("nested/00-nested.png"),
+            image::ImageFormat::Png,
+            2,
+        );
+        write_test_image(&root.join("20-cover.png"), image::ImageFormat::Png, 2);
+        write_test_image(&root.join("10-cover.png"), image::ImageFormat::Png, 2);
+
+        assert_eq!(
+            find_first_image_file(&root).unwrap(),
+            Some(root.join("10-cover.png"))
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn only_proven_duplicate_or_indexed_legacy_covers_are_removable() {
+        assert_eq!(
+            indexed_legacy_cover_name("DL_ASMR/RJ123/_Cover.jpg", "RJ123").as_deref(),
+            Some("_Cover.jpg")
+        );
+        assert!(indexed_legacy_cover_name("DL_ASMR/RJ123/user-cover.jpg", "RJ123").is_none());
+        assert!(indexed_legacy_cover_name("DL_ASMR/RJ999/_Cover.jpg", "RJ123").is_none());
+
+        let duplicate_root = temp_root("duplicate-cover");
+        let original = duplicate_root.join("RJ123.jpg");
+        let legacy = duplicate_root.join("_Cover.jpg");
+        write_test_image(&original, image::ImageFormat::WebP, 2);
+        fs::copy(&original, &legacy).unwrap();
+        assert!(legacy_cover_has_user_copy(&duplicate_root, &legacy).unwrap());
+
+        let unique_root = temp_root("unique-cover");
+        let unique_legacy = unique_root.join("_Cover.png");
+        write_test_image(&unique_legacy, image::ImageFormat::Png, 3);
+        assert!(!legacy_cover_has_user_copy(&unique_root, &unique_legacy).unwrap());
+
+        let _ = fs::remove_dir_all(duplicate_root);
+        let _ = fs::remove_dir_all(unique_root);
+    }
+
+    #[test]
+    fn cover_migration_removes_owned_files_and_preserves_ambiguous_user_data() {
+        let root = temp_root("cover-migration");
+        let work_dir = root.join("DL_ASMR/RJ123");
+        let original = work_dir.join("RJ123.jpg");
+        let indexed_legacy = work_dir.join("_Cover.jpg");
+        let ambiguous_legacy = work_dir.join("_Cover.png");
+        let thumbnail = root.join("_MyVault/Index/DL_ASMR/Thumbnails/RJ123.jpg");
+        write_test_image(&original, image::ImageFormat::WebP, 2);
+        fs::copy(&original, &indexed_legacy).unwrap();
+        write_test_image(&ambiguous_legacy, image::ImageFormat::Png, 3);
+        write_test_image(&thumbnail, image::ImageFormat::Jpeg, 2);
+
+        let mut index = sample_index();
+        index.works[0].work_dir = "DL_ASMR/RJ123".to_string();
+        index.works[0].files_dir = "DL_ASMR/RJ123".to_string();
+        index.works[0].cover_path = Some("DL_ASMR/RJ123/_Cover.jpg".to_string());
+        let report = migrate_legacy_cover_storage_at(&root, &mut index)
+            .unwrap()
+            .unwrap();
+
+        assert!(original.is_file());
+        assert!(!indexed_legacy.exists());
+        assert!(ambiguous_legacy.is_file());
+        assert!(!thumbnail.exists());
+        assert!(index.works[0].cover_path.is_none());
+        assert!(index.works[0].thumbnail_path.is_none());
+        assert_eq!(
+            report.removed_legacy_covers,
+            vec!["DL_ASMR/RJ123/_Cover.jpg".to_string()]
+        );
+        assert_eq!(
+            report.preserved_ambiguous_covers,
+            vec!["DL_ASMR/RJ123/_Cover.png".to_string()]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ordinary_work_files_are_classified_instead_of_filtered() {
+        let root = temp_root("ordinary-file");
+        fs::create_dir_all(&root).unwrap();
+        let readme = root.join("readme.txt");
+        let archive = root.join("resources.zip");
+        fs::write(&readme, "readme").unwrap();
+        fs::write(&archive, "archive").unwrap();
+        assert_eq!(asmr_file_kind(&readme), "file");
+        assert_eq!(asmr_file_kind(&archive), "file");
+        assert!(should_hide_work_file("_Work.json"));
+        assert!(!should_hide_work_file("_Work.json.bak"));
+        assert!(!should_hide_work_file("_Cover.jpg"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repairs_paths_written_by_0_1_9() {
+        let mut index = sample_index();
+        assert_eq!(
+            repair_0_1_9_work_paths(&mut index),
+            vec!["RJ123".to_string()]
+        );
+        let work = &index.works[0];
+        assert_eq!(work.work_dir, "DL_ASMR/RJ123");
+        assert_eq!(work.files_dir, "DL_ASMR/RJ123");
+        assert_eq!(work.cover_path.as_deref(), Some("DL_ASMR/RJ123/_Cover.png"));
+        assert!(repair_0_1_9_work_paths(&mut index).is_empty());
+    }
+
+    #[test]
+    fn archives_only_safe_misrouted_root_metadata() {
+        let root = temp_root("repair");
+        fs::create_dir_all(root.join("DL_ASMR/RJ123")).unwrap();
+        fs::create_dir_all(root.join("RJ123")).unwrap();
+        fs::write(root.join("RJ123/_Work.json"), "wrong path metadata").unwrap();
+        fs::write(root.join("RJ123/_Work.json.bak"), "older metadata").unwrap();
+
+        let archived = archive_misrouted_root_metadata_at(&root, &sample_index()).unwrap();
+        assert_eq!(archived, vec!["RJ123".to_string()]);
+        assert!(!root.join("RJ123").exists());
+        assert!(root
+            .join("_MyVault/Backups/Repair-0.1.10/UnexpectedRootWorkMetadata/RJ123/_Work.json")
+            .is_file());
+        assert!(root
+            .join("_MyVault/Backups/Repair-0.1.10/UnexpectedRootWorkMetadata/RJ123/_Work.json.bak")
+            .is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn preserves_a_misrouted_directory_if_it_contains_user_data() {
+        let root = temp_root("unsafe-repair");
+        fs::create_dir_all(root.join("DL_ASMR/RJ123")).unwrap();
+        fs::create_dir_all(root.join("RJ123")).unwrap();
+        fs::write(root.join("RJ123/_Work.json"), "metadata").unwrap();
+        fs::write(root.join("RJ123/audio.flac"), "user data").unwrap();
+
+        assert!(archive_misrouted_root_metadata_at(&root, &sample_index())
+            .unwrap()
+            .is_empty());
+        assert!(root.join("RJ123/audio.flac").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefixes_from_frontend_paths() {
+        assert_eq!(
+            frontend_absolute_path(Path::new(r"\\?\E:\MyVaultData\DL_ASMR\track.mp3")),
+            r"E:\MyVaultData\DL_ASMR\track.mp3"
+        );
+        assert_eq!(
+            frontend_absolute_path(Path::new(r"\\?\UNC\server\share\track.mp3")),
+            r"\\server\share\track.mp3"
+        );
+    }
 }
