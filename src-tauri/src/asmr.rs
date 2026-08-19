@@ -4,9 +4,9 @@ use crate::core::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
-    io::Read,
+    io::{ErrorKind, Read},
     path::{Path, PathBuf},
 };
 use tauri::AppHandle;
@@ -55,6 +55,7 @@ pub(crate) struct AsmrWork {
 pub(crate) struct AsmrBootstrapPayload {
     works: Vec<AsmrWork>,
     dictionaries: AsmrDictionaries,
+    library_path: String,
 }
 
 #[derive(Serialize)]
@@ -83,6 +84,16 @@ pub(crate) struct ImportAsmrWorkInput {
     rj_id: Option<String>,
     title: Option<String>,
     overwrite: Option<bool>,
+    mode: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImportAsmrWorkResult {
+    work: AsmrWork,
+    mode: String,
+    source_removed: bool,
+    warning: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -185,6 +196,115 @@ fn default_asmr_index() -> AsmrIndex {
     }
 }
 
+fn discover_moved_asmr_works_at(
+    data_root: &Path,
+) -> Result<BTreeMap<String, (PathBuf, AsmrWork)>, String> {
+    let root = data_root.join("DL_ASMR");
+    let mut discovered = BTreeMap::new();
+    let mut pending = vec![root];
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)
+            .map_err(|error| format!("failed to scan DL_ASMR for moved works: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("failed to scan DL_ASMR for moved works: {error}"))?;
+        entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_ascii_lowercase());
+        for entry in entries {
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("failed to inspect DL_ASMR item: {error}"))?;
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            let metadata_path = path.join("_Work.json");
+            if metadata_path.is_file() {
+                let Ok(raw) = read_utf8_file(&metadata_path) else {
+                    continue;
+                };
+                let Ok(mut work) = serde_json::from_str::<AsmrWork>(&raw) else {
+                    continue;
+                };
+                let Ok(rj_id) = normalize_rj_id(&work.rj_id) else {
+                    continue;
+                };
+                work.rj_id = rj_id.clone();
+                discovered.entry(rj_id).or_insert((path, work));
+            } else {
+                pending.push(path);
+            }
+        }
+    }
+    Ok(discovered)
+}
+
+fn reconcile_work_directory(
+    data_root: &Path,
+    work: &mut AsmrWork,
+    directory: &Path,
+) -> Result<(), String> {
+    let relative = relative_data_path_at(data_root, directory)?;
+    work.work_dir = relative.clone();
+    work.files_dir = relative;
+
+    let cover_is_valid = work
+        .cover_path
+        .as_deref()
+        .and_then(|path| stored_path_at(data_root, path).ok())
+        .map(|path| path.is_file() && is_supported_image_file(&path))
+        .unwrap_or(false);
+    if !cover_is_valid {
+        work.cover_path = find_first_image_file(directory)?
+            .map(|path| relative_data_path_at(data_root, &path))
+            .transpose()?;
+    }
+    work.thumbnail_path = None;
+    work.last_opened_folder = work
+        .last_opened_folder
+        .as_deref()
+        .and_then(|path| validate_relative_path(path).ok())
+        .filter(|path| directory.join(path).is_dir());
+    let last_audio = work
+        .last_played_audio_path
+        .as_deref()
+        .and_then(|path| validate_relative_path(path).ok())
+        .filter(|path| directory.join(path).is_file());
+    if last_audio.is_none() {
+        work.last_position_ms = 0;
+    }
+    work.last_played_audio_path = last_audio;
+    Ok(())
+}
+
+fn reconcile_asmr_index_at(data_root: &Path, index: &mut AsmrIndex) -> Result<(), String> {
+    let mut discovered = discover_moved_asmr_works_at(data_root)?;
+    let mut retained = Vec::with_capacity(index.works.len());
+    for mut work in index.works.drain(..) {
+        let current = stored_path_at(data_root, &work.work_dir)?;
+        let directory = if current.is_dir() {
+            discovered.remove(&work.rj_id);
+            Some(current)
+        } else {
+            discovered.remove(&work.rj_id).map(|(path, _)| path)
+        };
+        let Some(directory) = directory else {
+            continue;
+        };
+        reconcile_work_directory(data_root, &mut work, &directory)?;
+        retained.push(work);
+    }
+    for (_, (directory, mut work)) in discovered {
+        reconcile_work_directory(data_root, &mut work, &directory)?;
+        retained.push(work);
+    }
+    index.works = retained;
+    normalize_asmr_index(index);
+    Ok(())
+}
+
+fn reconcile_asmr_index(app: &AppHandle, index: &mut AsmrIndex) -> Result<(), String> {
+    reconcile_asmr_index_at(&data_root_dir(app)?, index)
+}
+
 fn load_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
     let path = asmr_index_path(app)?;
     if !path.exists() {
@@ -213,6 +333,7 @@ fn load_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
     };
     normalize_asmr_index(&mut index);
     let repaired_paths = repair_0_1_9_work_paths(&mut index);
+    reconcile_asmr_index(app, &mut index)?;
     let cover_migration = migrate_legacy_cover_storage(app, &mut index)?;
     save_asmr_index(app, &index)?;
     if let Some(report) = cover_migration {
@@ -795,11 +916,15 @@ fn validate_relative_path(path: &str) -> Result<String, String> {
 }
 
 fn stored_path(app: &AppHandle, value: &str) -> Result<PathBuf, String> {
+    stored_path_at(&data_root_dir(app)?, value)
+}
+
+fn stored_path_at(data_root: &Path, value: &str) -> Result<PathBuf, String> {
     let relative = validate_relative_path(value)?;
     if relative.is_empty() {
         return Err("stored DL_ASMR path is empty".to_string());
     }
-    Ok(data_root_dir(app)?.join(relative))
+    Ok(data_root.join(relative))
 }
 
 fn frontend_absolute_path(path: &Path) -> String {
@@ -814,7 +939,11 @@ fn frontend_absolute_path(path: &Path) -> String {
 }
 
 fn relative_data_path(app: &AppHandle, path: &Path) -> Result<String, String> {
-    path.strip_prefix(data_root_dir(app)?)
+    relative_data_path_at(&data_root_dir(app)?, path)
+}
+
+fn relative_data_path_at(data_root: &Path, path: &Path) -> Result<String, String> {
+    path.strip_prefix(data_root)
         .map_err(|error| format!("failed to make DL_ASMR path relative: {error}"))
         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
 }
@@ -840,8 +969,17 @@ fn asmr_work_dir(app: &AppHandle, rj_id: &str) -> Result<PathBuf, String> {
     Ok(asmr_works_dir(app)?.join(normalize_rj_id(rj_id)?))
 }
 
-fn asmr_work_files_dir(app: &AppHandle, rj_id: &str) -> Result<PathBuf, String> {
-    asmr_work_dir(app, rj_id)
+fn indexed_work_files_dir(
+    app: &AppHandle,
+    index: &AsmrIndex,
+    rj_id: &str,
+) -> Result<PathBuf, String> {
+    let work = index
+        .works
+        .iter()
+        .find(|work| work.rj_id == rj_id)
+        .ok_or_else(|| "asmr work not found".to_string())?;
+    stored_path(app, &work.files_dir)
 }
 
 fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
@@ -872,6 +1010,78 @@ fn copy_dir_recursive(source: &Path, target: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AsmrImportMode {
+    Copy,
+    Move,
+}
+
+impl AsmrImportMode {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value.map(str::trim).filter(|value| !value.is_empty()) {
+            None | Some("copy") => Ok(Self::Copy),
+            Some("move") => Ok(Self::Move),
+            Some(_) => Err("invalid ASMR import mode".to_string()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Copy => "copy",
+            Self::Move => "move",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StagedTransfer {
+    Copied,
+    Renamed,
+    CrossDeviceCopy,
+}
+
+fn validate_import_source(data_root: &Path, source: &Path) -> Result<(), String> {
+    let source = fs::canonicalize(source)
+        .map_err(|error| format!("failed to resolve ASMR import source: {error}"))?;
+    let data_root = fs::canonicalize(data_root)
+        .map_err(|error| format!("failed to resolve MyVault data root: {error}"))?;
+    if source.starts_with(&data_root) || data_root.starts_with(&source) {
+        return Err("ASMR import source must not overlap the MyVault data directory".to_string());
+    }
+    Ok(())
+}
+
+fn stage_import_source(
+    source: &Path,
+    staging: &Path,
+    mode: AsmrImportMode,
+) -> Result<StagedTransfer, String> {
+    if let Some(parent) = staging.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to prepare ASMR import staging: {error}"))?;
+    }
+    match mode {
+        AsmrImportMode::Copy => {
+            if let Err(error) = copy_dir_recursive(source, staging) {
+                let _ = fs::remove_dir_all(staging);
+                return Err(error);
+            }
+            Ok(StagedTransfer::Copied)
+        }
+        AsmrImportMode::Move => match fs::rename(source, staging) {
+            Ok(()) => Ok(StagedTransfer::Renamed),
+            Err(error) if error.kind() == ErrorKind::CrossesDevices => {
+                if let Err(error) = copy_dir_recursive(source, staging) {
+                    let _ = fs::remove_dir_all(staging);
+                    return Err(error);
+                }
+                Ok(StagedTransfer::CrossDeviceCopy)
+            }
+            Err(error) => Err(format!("failed to move ASMR source into staging: {error}")),
+        },
+    }
 }
 
 fn is_audio_extension(extension: &str) -> bool {
@@ -1130,6 +1340,7 @@ pub(crate) fn bootstrap_asmr(app: AppHandle) -> Result<AsmrBootstrapPayload, Str
             .map(|work| hydrate_work(&app, work))
             .collect::<Result<Vec<_>, _>>()?,
         dictionaries: index.dictionaries,
+        library_path: frontend_absolute_path(&asmr_works_dir(&app)?),
     })
 }
 
@@ -1187,6 +1398,7 @@ fn asmr_payload_from_index(
             .map(|work| hydrate_work(app, work))
             .collect::<Result<Vec<_>, _>>()?,
         dictionaries: index.dictionaries,
+        library_path: frontend_absolute_path(&asmr_works_dir(app)?),
     })
 }
 
@@ -1194,12 +1406,15 @@ fn asmr_payload_from_index(
 pub(crate) fn import_asmr_work(
     app: AppHandle,
     input: ImportAsmrWorkInput,
-) -> Result<AsmrWork, String> {
+) -> Result<ImportAsmrWorkResult, String> {
     ensure_asmr_layout(&app)?;
     let source = PathBuf::from(input.source_path);
     if !source.is_dir() {
         return Err("source path must be a directory".to_string());
     }
+    let data_root = data_root_dir(&app)?;
+    validate_import_source(&data_root, &source)?;
+    let mode = AsmrImportMode::parse(input.mode.as_deref())?;
 
     let rj_id = match input.rj_id {
         Some(value) if !value.trim().is_empty() => normalize_rj_id(&value)?,
@@ -1207,82 +1422,200 @@ pub(crate) fn import_asmr_work(
     };
 
     let mut index = load_asmr_index(&app)?;
+    let previous_index = index.clone();
+    let existing_work = index.works.iter().find(|work| work.rj_id == rj_id).cloned();
     let overwrite = input.overwrite.unwrap_or(false);
-    if index.works.iter().any(|work| work.rj_id == rj_id) && !overwrite {
+    if existing_work.is_some() && !overwrite {
         return Err("asmr work already exists".to_string());
     }
 
-    let work_dir = asmr_work_dir(&app, &rj_id)?;
+    let work_dir = existing_work
+        .as_ref()
+        .map(|work| stored_path(&app, &work.work_dir))
+        .transpose()?
+        .unwrap_or(asmr_work_dir(&app, &rj_id)?);
     if work_dir.exists() && !overwrite {
         return Err("DL_ASMR work directory already exists".to_string());
     }
-    let importing_dir = data_root_dir(&app)?
-        .join("_MyVault/Importing")
-        .join(format!("{}-{}", rj_id, uuid::Uuid::new_v4()));
-    copy_dir_recursive(&source, &importing_dir)?;
-
-    let mut backup_path = None;
-    if work_dir.exists() {
-        let backup = data_root_dir(&app)?
-            .join("_MyVault/Backups/DL_ASMR")
-            .join(format!("{}-{}", rj_id, now_ts()));
-        if let Some(parent) = backup.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|error| format!("failed to prepare DL_ASMR backup: {error}"))?;
-        }
-        fs::rename(&work_dir, &backup)
-            .map_err(|error| format!("failed to preserve previous DL_ASMR work: {error}"))?;
-        backup_path = Some(backup);
-    }
-    if let Err(error) = fs::rename(&importing_dir, &work_dir) {
-        if let Some(backup) = backup_path {
-            let _ = fs::rename(backup, &work_dir);
-        }
-        return Err(format!("failed to activate imported DL_ASMR work: {error}"));
-    }
-    let files_dir = work_dir.clone();
-    let auto_cover_path = find_first_image_file(&files_dir)?
-        .map(|path| relative_data_path(&app, &path))
-        .transpose()?;
-
-    let ts = now_ts();
     let title = input
         .title
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+        .or_else(|| existing_work.as_ref().map(|work| work.title.clone()))
         .unwrap_or_else(|| {
             source
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| rj_id.clone())
         });
+    let source_cover_relative = find_first_image_file(&source)?
+        .map(|path| {
+            path.strip_prefix(&source)
+                .map(Path::to_path_buf)
+                .map_err(|error| format!("failed to resolve imported ASMR cover: {error}"))
+        })
+        .transpose()?;
+    let default_folder = find_default_asmr_folder(&source)?;
+    let importing_dir =
+        data_root
+            .join("_MyVault/Importing")
+            .join(format!("{}-{}", rj_id, uuid::Uuid::new_v4()));
+    let staged_transfer = stage_import_source(&source, &importing_dir, mode)?;
+
+    let mut backup_path = None;
+    if work_dir.exists() {
+        let backup = data_root.join("_MyVault/Backups/DL_ASMR").join(format!(
+            "{}-{}-{}",
+            rj_id,
+            now_ts(),
+            uuid::Uuid::new_v4()
+        ));
+        if let Some(parent) = backup.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                if staged_transfer == StagedTransfer::Renamed {
+                    let _ = fs::rename(&importing_dir, &source);
+                } else {
+                    let _ = fs::remove_dir_all(&importing_dir);
+                }
+                return Err(format!("failed to prepare DL_ASMR backup: {error}"));
+            }
+        }
+        if let Err(error) = fs::rename(&work_dir, &backup) {
+            if staged_transfer == StagedTransfer::Renamed {
+                let _ = fs::rename(&importing_dir, &source);
+            } else {
+                let _ = fs::remove_dir_all(&importing_dir);
+            }
+            return Err(format!("failed to preserve previous DL_ASMR work: {error}"));
+        }
+        backup_path = Some(backup);
+    }
+    if let Err(error) = fs::rename(&importing_dir, &work_dir) {
+        if let Some(backup) = backup_path.as_ref() {
+            let _ = fs::rename(backup, &work_dir);
+        }
+        if staged_transfer == StagedTransfer::Renamed {
+            let _ = fs::rename(&importing_dir, &source);
+        } else {
+            let _ = fs::remove_dir_all(&importing_dir);
+        }
+        return Err(format!("failed to activate imported DL_ASMR work: {error}"));
+    }
+    let files_dir = work_dir.clone();
+    let discovered_cover_path = source_cover_relative
+        .as_deref()
+        .map(|relative| relative_data_path(&app, &files_dir.join(relative)))
+        .transpose()?;
+    let preserved_cover_path = existing_work
+        .as_ref()
+        .and_then(|work| work.cover_path.as_ref())
+        .filter(|path| {
+            stored_path(&app, path)
+                .map(|path| path.is_file())
+                .unwrap_or(false)
+        })
+        .cloned();
+    let preserved_opened_folder = existing_work
+        .as_ref()
+        .and_then(|work| work.last_opened_folder.as_ref())
+        .and_then(|path| validate_relative_path(path).ok())
+        .filter(|path| files_dir.join(path).is_dir());
+    let preserved_audio_path = existing_work
+        .as_ref()
+        .and_then(|work| work.last_played_audio_path.as_ref())
+        .and_then(|path| validate_relative_path(path).ok())
+        .filter(|path| files_dir.join(path).is_file());
+    let preserved_position_ms = if preserved_audio_path.is_some() {
+        existing_work
+            .as_ref()
+            .map(|work| work.last_position_ms)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let ts = now_ts();
     let work = AsmrWork {
         rj_id: rj_id.clone(),
         title,
-        circle: String::new(),
-        voice_actors: Vec::new(),
-        tags: Vec::new(),
-        status: "new".to_string(),
-        favorite: false,
-        rating: None,
-        note: String::new(),
+        circle: existing_work
+            .as_ref()
+            .map(|work| work.circle.clone())
+            .unwrap_or_default(),
+        voice_actors: existing_work
+            .as_ref()
+            .map(|work| work.voice_actors.clone())
+            .unwrap_or_default(),
+        tags: existing_work
+            .as_ref()
+            .map(|work| work.tags.clone())
+            .unwrap_or_default(),
+        status: existing_work
+            .as_ref()
+            .map(|work| work.status.clone())
+            .unwrap_or_else(|| "new".to_string()),
+        favorite: existing_work
+            .as_ref()
+            .map(|work| work.favorite)
+            .unwrap_or(false),
+        rating: existing_work.as_ref().and_then(|work| work.rating),
+        note: existing_work
+            .as_ref()
+            .map(|work| work.note.clone())
+            .unwrap_or_default(),
         work_dir: relative_data_path(&app, &work_dir)?,
         files_dir: relative_data_path(&app, &files_dir)?,
-        cover_path: auto_cover_path,
+        cover_path: preserved_cover_path.or(discovered_cover_path),
         thumbnail_path: None,
-        last_opened_folder: find_default_asmr_folder(&files_dir)?,
-        last_played_audio_path: None,
-        last_position_ms: 0,
-        imported_at: ts,
+        last_opened_folder: preserved_opened_folder.or(default_folder),
+        last_played_audio_path: preserved_audio_path,
+        last_position_ms: preserved_position_ms,
+        imported_at: existing_work
+            .as_ref()
+            .map(|work| work.imported_at)
+            .unwrap_or(ts),
         updated_at: ts,
     };
 
     index.works.retain(|item| item.rj_id != rj_id);
     index.works.push(work.clone());
-    save_asmr_index(&app, &index)?;
-    hydrate_work(&app, &work)
+    if let Err(error) = save_asmr_index(&app, &index) {
+        if staged_transfer == StagedTransfer::Renamed {
+            let _ = fs::rename(&work_dir, &source);
+        } else {
+            let _ = fs::remove_dir_all(&work_dir);
+        }
+        if let Some(backup) = backup_path.as_ref() {
+            let _ = fs::rename(backup, &work_dir);
+        }
+        let _ = save_asmr_index(&app, &previous_index);
+        return Err(error);
+    }
+
+    let mut source_removed = staged_transfer == StagedTransfer::Renamed;
+    let warning = if staged_transfer == StagedTransfer::CrossDeviceCopy {
+        match fs::remove_dir_all(&source) {
+            Ok(()) => {
+                source_removed = true;
+                None
+            }
+            Err(error) => Some(format!(
+                "作品已导入，但无法完整清理原目录 {}：{error}",
+                source.display()
+            )),
+        }
+    } else {
+        None
+    };
+
+    Ok(ImportAsmrWorkResult {
+        work: hydrate_work(&app, &work)?,
+        mode: mode.as_str().to_string(),
+        source_removed,
+        warning,
+    })
 }
 
 #[tauri::command]
@@ -1378,7 +1711,8 @@ pub(crate) fn list_asmr_folder(
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let folder_path = validate_relative_path(&input.folder_path)?;
-    let root = asmr_work_files_dir(&app, &rj_id)?;
+    let mut index = load_asmr_index(&app)?;
+    let root = indexed_work_files_dir(&app, &index, &rj_id)?;
     let folder = if folder_path.is_empty() {
         root.clone()
     } else {
@@ -1389,7 +1723,6 @@ pub(crate) fn list_asmr_folder(
         return Err("asmr folder not found".to_string());
     }
 
-    let mut index = load_asmr_index(&app)?;
     if let Some(work) = index.works.iter_mut().find(|work| work.rj_id == rj_id) {
         work.last_opened_folder = if folder_path.is_empty() {
             None
@@ -1504,7 +1837,8 @@ pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result
     if is_legacy_cover_name(&file_name) {
         return Err("legacy _Cover files cannot be selected as cover".to_string());
     }
-    let work_dir = asmr_work_dir(&app, &rj_id)?;
+    let mut index = load_asmr_index(&app)?;
+    let work_dir = indexed_work_files_dir(&app, &index, &rj_id)?;
     let source = work_dir.join(&relative_path);
     if !source.is_file() || !is_supported_image_file(&source) {
         return Err("selected work file is not a supported image".to_string());
@@ -1515,11 +1849,6 @@ pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result
         .map_err(|error| format!("failed to resolve cover image: {error}"))?;
     if !canonical_source.starts_with(&canonical_work_dir) {
         return Err("cover image must stay inside the work directory".to_string());
-    }
-
-    let mut index = load_asmr_index(&app)?;
-    if !index.works.iter().any(|work| work.rj_id == rj_id) {
-        return Err("asmr work not found".to_string());
     }
 
     let work = index
@@ -1543,7 +1872,8 @@ pub(crate) fn read_asmr_text_file(
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let relative_path = validate_relative_path(&input.relative_path)?;
-    let root = asmr_work_files_dir(&app, &rj_id)?;
+    let index = load_asmr_index(&app)?;
+    let root = indexed_work_files_dir(&app, &index, &rj_id)?;
     let path = root.join(&relative_path);
     let extension = path
         .extension()
@@ -1714,6 +2044,70 @@ mod tests {
         assert!(should_hide_work_file("_Work.json"));
         assert!(!should_hide_work_file("_Work.json.bak"));
         assert!(!should_hide_work_file("_Cover.jpg"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn move_import_staging_renames_the_source_on_the_same_volume() {
+        let root = temp_root("move-import");
+        let source = root.join("source/RJ123");
+        let staging = root.join("data/_MyVault/Importing/RJ123");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("track.flac"), "media").unwrap();
+
+        let transfer = stage_import_source(&source, &staging, AsmrImportMode::Move).unwrap();
+
+        assert!(transfer == StagedTransfer::Renamed);
+        assert!(!source.exists());
+        assert!(staging.join("track.flac").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn import_source_cannot_overlap_the_data_root() {
+        let root = temp_root("import-overlap");
+        let data_root = root.join("data");
+        let managed_source = data_root.join("DL_ASMR/RJ123");
+        fs::create_dir_all(&managed_source).unwrap();
+
+        assert!(validate_import_source(&data_root, &managed_source).is_err());
+        assert!(validate_import_source(&managed_source, &data_root).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_removes_deleted_works_from_the_index() {
+        let root = temp_root("reconcile-delete");
+        fs::create_dir_all(root.join("DL_ASMR")).unwrap();
+        let mut index = sample_index();
+        index.works[0].work_dir = "DL_ASMR/RJ123".to_string();
+        index.works[0].files_dir = "DL_ASMR/RJ123".to_string();
+
+        reconcile_asmr_index_at(&root, &mut index).unwrap();
+
+        assert!(index.works.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconcile_tracks_a_work_moved_inside_dl_asmr() {
+        let root = temp_root("reconcile-move");
+        let moved = root.join("DL_ASMR/Archive/RJ123");
+        fs::create_dir_all(&moved).unwrap();
+        let mut index = sample_index();
+        index.works[0].work_dir = "DL_ASMR/RJ123".to_string();
+        index.works[0].files_dir = "DL_ASMR/RJ123".to_string();
+        fs::write(
+            moved.join("_Work.json"),
+            serde_json::to_string_pretty(&index.works[0]).unwrap(),
+        )
+        .unwrap();
+
+        reconcile_asmr_index_at(&root, &mut index).unwrap();
+
+        assert_eq!(index.works.len(), 1);
+        assert_eq!(index.works[0].work_dir, "DL_ASMR/Archive/RJ123");
+        assert_eq!(index.works[0].files_dir, "DL_ASMR/Archive/RJ123");
         let _ = fs::remove_dir_all(root);
     }
 

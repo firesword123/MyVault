@@ -1,12 +1,14 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import {
   ChevronLeft,
   ChevronRight,
   FilePlus2,
+  FolderOpen,
   FolderInput,
   Images,
-  Trash2,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -51,16 +53,18 @@ export function GalleryWorkspace() {
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("正在加载图库…");
   const requestId = useRef(0);
+  const currentPage = useRef(1);
 
-  const loadPage = useCallback(async (page: number) => {
+  const loadPage = useCallback(async (page: number, refresh = false) => {
     const currentRequest = ++requestId.current;
     setBusy(true);
     try {
       const next = await invoke<GalleryPage>("list_gallery", {
-        input: { page, pageSize: PAGE_SIZE },
+        input: { page, pageSize: PAGE_SIZE, refresh },
       });
       if (currentRequest !== requestId.current) return;
       setPayload(next);
+      currentPage.current = next.page;
       setMessage(next.totalItems > 0 ? `共 ${next.totalItems} 张图片` : "图库中还没有图片");
     } catch (error) {
       if (currentRequest !== requestId.current) return;
@@ -72,6 +76,22 @@ export function GalleryWorkspace() {
 
   useEffect(() => {
     void loadPage(1);
+  }, [loadPage]);
+
+  useEffect(() => {
+    const refreshFromDisk = () => {
+      setPreview(null);
+      void loadPage(currentPage.current, true);
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") refreshFromDisk();
+    };
+    window.addEventListener("focus", refreshFromDisk);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", refreshFromDisk);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [loadPage]);
 
   useEffect(() => {
@@ -117,20 +137,21 @@ export function GalleryWorkspace() {
     await importPaths(selectedPaths(selection));
   }
 
-  async function deletePreviewedImage() {
-    if (!preview || !payload) return;
-    if (!window.confirm(`永久删除图库中的图片？\n\n${preview.relativePath}`)) return;
-    const nextPage = payload.items.length === 1 && payload.page > 1 ? payload.page - 1 : payload.page;
+  async function openGalleryFolder() {
+    if (!payload) return;
     try {
-      setBusy(true);
-      await invoke("delete_gallery_image", {
-        input: { relativePath: preview.relativePath },
-      });
-      setPreview(null);
-      await loadPage(nextPage);
+      await openPath(payload.galleryPath);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
-      setBusy(false);
+    }
+  }
+
+  async function revealPreviewedImage() {
+    if (!preview) return;
+    try {
+      await revealItemInDir(preview.originalPath);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -145,6 +166,14 @@ export function GalleryWorkspace() {
           </div>
         </div>
         <div className="gallery-actions">
+          <button type="button" className="gallery-secondary-button" disabled={busy || !payload} onClick={() => void openGalleryFolder()}>
+            <FolderOpen size={16} />
+            打开图库目录
+          </button>
+          <button type="button" className="gallery-secondary-button" disabled={busy} onClick={() => void loadPage(currentPage.current, true)}>
+            <RefreshCw size={16} />
+            刷新
+          </button>
           <button type="button" className="gallery-secondary-button" disabled={busy} onClick={() => void chooseFolder()}>
             <FolderInput size={16} />
             导入文件夹
@@ -231,9 +260,9 @@ export function GalleryWorkspace() {
               <strong>{preview.fileName}</strong>
               <span>{preview.relativePath}</span>
             </div>
-            <button type="button" className="gallery-delete-button" disabled={busy} onClick={() => void deletePreviewedImage()}>
-              <Trash2 size={16} />
-              删除图片
+            <button type="button" className="gallery-preview-explorer-button" onClick={() => void revealPreviewedImage()}>
+              <FolderOpen size={16} />
+              在资源管理器中显示
             </button>
           </div>
         </div>

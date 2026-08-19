@@ -2,7 +2,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import {
   KeyboardEvent,
@@ -801,6 +801,7 @@ function App() {
               },
             )
           }
+          onRevealFolder={(folderPath) => void openPath(`${vaultPath}/Notes/${folderPath}`)}
           onRevealNote={(note) => void revealItemInDir(`${vaultPath}/${note.relativePath}`)}
           onDeleteNote={(note) =>
             note.isTrashed

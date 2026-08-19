@@ -41,6 +41,7 @@ fn main() {
     tauri::Builder::default()
         .manage(gallery::GalleryState::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             core::ensure_gallery_layout(app.handle())
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
@@ -70,7 +71,6 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             gallery::list_gallery,
             gallery::import_gallery,
-            gallery::delete_gallery_image,
             minimize_window,
             toggle_maximize_window,
             close_window,

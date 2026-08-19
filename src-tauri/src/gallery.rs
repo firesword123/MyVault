@@ -5,7 +5,7 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     io::BufWriter,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::Mutex,
     thread,
     time::UNIX_EPOCH,
@@ -37,18 +37,13 @@ pub(crate) struct GalleryState {
 pub(crate) struct ListGalleryInput {
     page: usize,
     page_size: usize,
+    refresh: Option<bool>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImportGalleryInput {
     paths: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct DeleteGalleryInput {
-    relative_path: String,
 }
 
 #[derive(Serialize)]
@@ -260,6 +255,9 @@ pub(crate) fn list_gallery(
     input: ListGalleryInput,
 ) -> Result<GalleryPage, String> {
     crate::core::ensure_gallery_layout(&app)?;
+    if input.refresh.unwrap_or(false) {
+        invalidate_catalog(&state)?;
+    }
     let records = load_catalog(&app, &state)?;
     let page_size = if input.page_size == 0 {
         DEFAULT_PAGE_SIZE
@@ -473,68 +471,9 @@ pub(crate) fn import_gallery(
     Ok(ImportGalleryResult { imported, skipped })
 }
 
-fn resolve_gallery_item(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
-    let relative = Path::new(relative_path);
-    if relative.as_os_str().is_empty()
-        || relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("invalid gallery image path".to_string());
-    }
-    let path = root.join(relative);
-    let resolved = path
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve gallery image: {error}"))?;
-    if !resolved.starts_with(root) || !resolved.is_file() {
-        return Err("gallery image is outside the gallery directory".to_string());
-    }
-    Ok(resolved)
-}
-
-#[tauri::command]
-pub(crate) fn delete_gallery_image(
-    app: AppHandle,
-    state: State<'_, GalleryState>,
-    input: DeleteGalleryInput,
-) -> Result<(), String> {
-    let root = crate::core::gallery_dir(&app)?
-        .canonicalize()
-        .map_err(|error| format!("failed to resolve gallery directory: {error}"))?;
-    let path = resolve_gallery_item(&root, &input.relative_path)?;
-    fs::remove_file(&path).map_err(|error| format!("failed to delete gallery image: {error}"))?;
-    let mut parent = path.parent().map(Path::to_path_buf);
-    while let Some(directory) = parent {
-        if directory == root {
-            break;
-        }
-        if fs::read_dir(&directory)
-            .ok()
-            .and_then(|mut entries| entries.next())
-            .is_some()
-        {
-            break;
-        }
-        let next = directory.parent().map(Path::to_path_buf);
-        if fs::remove_dir(&directory).is_err() {
-            break;
-        }
-        parent = next;
-    }
-    invalidate_catalog(&state)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_paths_that_can_escape_gallery() {
-        let root = Path::new(r"C:\Gallery");
-        assert!(resolve_gallery_item(root, "../outside.jpg").is_err());
-        assert!(resolve_gallery_item(root, r"C:\outside.jpg").is_err());
-    }
 
     #[test]
     fn duplicate_names_get_a_readable_suffix() {

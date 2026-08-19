@@ -65,10 +65,16 @@
   font-size: 0.75rem;
 }
 
+.asmr-import-actions {
+  margin: auto 14px 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
 .asmr-import-button {
   min-height: 42px;
-  margin: auto 14px 18px;
-  padding: 0 14px;
+  padding: 0 10px;
   border-radius: 12px;
   display: inline-flex;
   align-items: center;
@@ -77,6 +83,10 @@
   background: #2f8f83;
   color: #fff;
   font-weight: 600;
+}
+
+.asmr-import-button.is-move {
+  background: #52657a;
 }
 
 .asmr-main {

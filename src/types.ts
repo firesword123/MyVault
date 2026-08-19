@@ -95,6 +95,7 @@ export type AsmrWork = {
 export type AsmrBootstrapPayload = {
   works: AsmrWork[];
   dictionaries: AsmrDictionaries;
+  libraryPath: string;
 };
 
 export type AsmrImportPreview = {
@@ -110,6 +111,13 @@ export type AsmrImportPreview = {
   otherCount: number;
   associatedSubtitleCount: number;
   defaultFolder: string | null;
+};
+
+export type AsmrImportResult = {
+  work: AsmrWork;
+  mode: "copy" | "move";
+  sourceRemoved: boolean;
+  warning: string | null;
 };
 
 export type AsmrFileItem = {

@@ -23,7 +23,7 @@
 .gallery-heading-icon,
 .gallery-primary-button,
 .gallery-secondary-button,
-.gallery-delete-button,
+.gallery-preview-explorer-button,
 .gallery-pagination > div,
 .gallery-preview-footer {
   display: flex;
@@ -67,7 +67,7 @@
 
 .gallery-primary-button,
 .gallery-secondary-button,
-.gallery-delete-button {
+.gallery-preview-explorer-button {
   min-height: 36px;
   justify-content: center;
   gap: 7px;
@@ -97,8 +97,7 @@
 }
 
 .gallery-primary-button:disabled,
-.gallery-secondary-button:disabled,
-.gallery-delete-button:disabled {
+.gallery-secondary-button:disabled {
   opacity: 0.55;
   cursor: default;
 }
@@ -326,14 +325,14 @@
   font-size: 0.7rem;
 }
 
-.gallery-delete-button {
+.gallery-preview-explorer-button {
   flex: 0 0 auto;
-  background: rgba(215, 70, 64, 0.16);
-  color: #ffaaa4;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
 }
 
-.gallery-delete-button:hover {
-  background: rgba(215, 70, 64, 0.26);
+.gallery-preview-explorer-button:hover {
+  background: rgba(255, 255, 255, 0.2);
 }
 
 @media (max-width: 760px) {

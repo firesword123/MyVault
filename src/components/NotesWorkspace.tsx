@@ -2,9 +2,9 @@ import { type ClipboardEvent, type FormEvent, useEffect, useRef, useState } from
 import {
   Bold,
   Check,
-  ChevronRight,
   Copy,
   Folder,
+  FolderOpen,
   FolderPlus,
   MoreHorizontal,
   Palette,
@@ -36,6 +36,7 @@ type NotesListPanelProps = {
   onMoveNoteToFolder: (noteId: string, folderPath: string) => void;
   onTrashNote: (noteId: string) => void;
   onRefreshNote: (noteId: string) => void;
+  onRevealFolder: (folderPath: string) => void;
   onRevealNote: (note: NoteSummary) => void;
   onDeleteNote: (note: NoteSummary) => void;
   onOpenSettings: () => void;
@@ -285,6 +286,7 @@ export function NotesListPanel({
   onMoveNoteToFolder,
   onTrashNote,
   onRefreshNote,
+  onRevealFolder,
   onRevealNote,
   onDeleteNote,
   onOpenSettings,
@@ -393,31 +395,32 @@ export function NotesListPanel({
             }`}
             onClick={() => onToggleFolder(group.key)}
           >
-            <span className={`folder-caret ${openFolders[group.key] !== false ? "is-open" : ""}`}>
-              <ChevronRight size={14} strokeWidth={1.8} />
-            </span>
             <span className="folder-glyph">
-              <Folder size={15} strokeWidth={1.8} />
+              {openFolders[group.key] !== false ? (
+                <FolderOpen size={16} strokeWidth={1.8} />
+              ) : (
+                <Folder size={16} strokeWidth={1.8} />
+              )}
             </span>
             <span>{group.label}</span>
           </button>
 
           {group.allowManage ? (
             <div className="folder-menu-shell" ref={activeMenuFolder === group.key ? menuShellRef : null}>
-              <button
-                type="button"
-                className="icon-button folder-menu-trigger"
-                aria-label={messages.renameFolderButton}
-                title={messages.renameFolderButton}
-                onClick={() =>
-                  setActiveMenuFolder((current) => (current === group.key ? null : group.key))
-                }
-              >
-                <MoreHorizontal size={15} strokeWidth={1.8} />
-              </button>
-
               {activeMenuFolder === group.key ? (
                 <div className="folder-inline-actions">
+                  <button
+                    type="button"
+                    className="icon-button folder-inline-action"
+                    aria-label={messages.openFolderButton}
+                    title={messages.openFolderButton}
+                    onClick={() => {
+                      onRevealFolder(group.key);
+                      setActiveMenuFolder(null);
+                    }}
+                  >
+                    <FolderOpen size={14} strokeWidth={1.8} />
+                  </button>
                   <button
                     type="button"
                     className="icon-button folder-inline-action"
@@ -447,7 +450,17 @@ export function NotesListPanel({
                     <Trash2 size={14} strokeWidth={1.8} />
                   </button>
                 </div>
-              ) : null}
+              ) : (
+                <button
+                  type="button"
+                  className="icon-button folder-menu-trigger"
+                  aria-label={messages.folderOptionsButton}
+                  title={messages.folderOptionsButton}
+                  onClick={() => setActiveMenuFolder(group.key)}
+                >
+                  <MoreHorizontal size={15} strokeWidth={1.8} />
+                </button>
+              )}
             </div>
           ) : null}
         </div>

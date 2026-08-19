@@ -1,12 +1,13 @@
 {
   "name": "myvault",
   "private": true,
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "prepare:asmr": "powershell -ExecutionPolicy Bypass -File scripts/build-asmr-sidecar.ps1",
+    "asmr:agent": "powershell -ExecutionPolicy Bypass -File src-tauri/asmr/agent.ps1",
     "prepare:gallery": "powershell -ExecutionPolicy Bypass -File scripts/build-gallery-sidecar.ps1",
     "prepare:modules": "npm run prepare:asmr && npm run prepare:gallery",
     "tauri:before-dev": "npm run prepare:modules && npm run dev",

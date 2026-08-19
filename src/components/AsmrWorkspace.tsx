@@ -1,21 +1,26 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useEffect, useMemo, useState } from "react";
+import { openPath } from "@tauri-apps/plugin-opener";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Building2,
   Check,
   ChevronLeft,
   ChevronRight,
   Clock3,
+  Copy,
   File,
   FileAudio2,
   FileImage,
   FileText,
   Folder,
+  FolderOpen,
   Library,
   Mic2,
+  MoveRight,
   Play,
   Plus,
+  RefreshCw,
   Search,
   Tags,
   X,
@@ -26,6 +31,7 @@ import type {
   AsmrFileItem,
   AsmrFolderPayload,
   AsmrImportPreview,
+  AsmrImportResult,
   AsmrWork,
   PlayerQueueRequest,
 } from "../types";
@@ -108,6 +114,7 @@ export function AsmrWorkspace() {
   const [activeSection, setActiveSection] = useState<AsmrSection>("library");
   const [activeFilter, setActiveFilter] = useState<AsmrFilter | null>(null);
   const [works, setWorks] = useState<AsmrWork[]>([]);
+  const [libraryPath, setLibraryPath] = useState("");
   const [dictionaries, setDictionaries] = useState<AsmrDictionaries>({
     tags: [],
     voiceActors: [],
@@ -203,15 +210,31 @@ export function AsmrWorkspace() {
     return filteredWorks.slice(start, start + pageSize);
   }, [filteredWorks, page, pageSize]);
 
-  async function bootstrapAsmr() {
+  const bootstrapAsmr = useCallback(async () => {
     setErrorMessage("");
     try {
       const payload = await invoke<AsmrBootstrapPayload>("bootstrap_asmr");
       setWorks(payload.works);
       setDictionaries(payload.dictionaries);
-      if (!selectedWorkId && payload.works[0]) {
-        setSelectedWorkId(payload.works[0].rjId);
-      }
+      setLibraryPath(payload.libraryPath);
+      setSelectedWorkId((current) => {
+        if (current && payload.works.some((work) => work.rjId === current)) return current;
+        if (current) {
+          setView("library");
+          setFolderPath("");
+          setFolderItems([]);
+          setSelectedCoverPath("");
+        }
+        return payload.works[0]?.rjId ?? "";
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  async function openInExplorer(path: string) {
+    try {
+      await openPath(path);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     }
@@ -236,7 +259,7 @@ export function AsmrWorkspace() {
     }
   }
 
-  async function importWork() {
+  async function importWork(mode: "copy" | "move") {
     setBusy(true);
     setErrorMessage("");
     try {
@@ -247,23 +270,27 @@ export function AsmrWorkspace() {
           sourcePath: selected,
         },
       });
+      const actionLabel = mode === "move" ? "移动导入" : "复制导入";
+      const moveNotice = mode === "move" ? "\n\n移动成功后，原位置中的作品文件夹会被移除。" : "";
       const overwrite = preview.alreadyExists
         ? window.confirm(
-            `${preview.rjId} 已存在，是否覆盖导入？\n\n文件 ${preview.fileCount} 个，文件夹 ${preview.folderCount} 个\n音频 ${preview.audioCount} 个，字幕 ${preview.subtitleCount} 个，已关联字幕 ${preview.associatedSubtitleCount} 个\n图片 ${preview.imageCount} 个，其他 ${preview.otherCount} 个\n总大小 ${formatBytes(preview.totalSize)}`,
+            `${preview.rjId} 已存在，是否覆盖并${actionLabel}？\n\n文件 ${preview.fileCount} 个，文件夹 ${preview.folderCount} 个\n音频 ${preview.audioCount} 个，字幕 ${preview.subtitleCount} 个，已关联字幕 ${preview.associatedSubtitleCount} 个\n图片 ${preview.imageCount} 个，其他 ${preview.otherCount} 个\n总大小 ${formatBytes(preview.totalSize)}${moveNotice}`,
           )
         : window.confirm(
-            `确认导入 ${preview.rjId}？\n\n文件 ${preview.fileCount} 个，文件夹 ${preview.folderCount} 个\n音频 ${preview.audioCount} 个，字幕 ${preview.subtitleCount} 个，已关联字幕 ${preview.associatedSubtitleCount} 个\n图片 ${preview.imageCount} 个，其他 ${preview.otherCount} 个\n总大小 ${formatBytes(preview.totalSize)}`,
+            `确认${actionLabel} ${preview.rjId}？\n\n文件 ${preview.fileCount} 个，文件夹 ${preview.folderCount} 个\n音频 ${preview.audioCount} 个，字幕 ${preview.subtitleCount} 个，已关联字幕 ${preview.associatedSubtitleCount} 个\n图片 ${preview.imageCount} 个，其他 ${preview.otherCount} 个\n总大小 ${formatBytes(preview.totalSize)}${moveNotice}`,
           );
       if (!overwrite) return;
-      const work = await invoke<AsmrWork>("import_asmr_work", {
+      const result = await invoke<AsmrImportResult>("import_asmr_work", {
         input: {
           sourcePath: selected,
           rjId: preview.rjId,
           overwrite: preview.alreadyExists,
+          mode,
         },
       });
       await bootstrapAsmr();
-      openWork(work.rjId, work.lastOpenedFolder ?? "");
+      openWork(result.work.rjId, result.work.lastOpenedFolder ?? "");
+      if (result.warning) setErrorMessage(result.warning);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -667,7 +694,17 @@ export function AsmrWorkspace() {
 
   useEffect(() => {
     void bootstrapAsmr();
-  }, []);
+    const refreshFromDisk = () => void bootstrapAsmr();
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") refreshFromDisk();
+    };
+    window.addEventListener("focus", refreshFromDisk);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", refreshFromDisk);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, [bootstrapAsmr]);
 
   useEffect(() => {
     setPage((current) => Math.min(current, pageCount));
@@ -700,10 +737,16 @@ export function AsmrWorkspace() {
           })}
         </div>
 
-        <button type="button" className="asmr-import-button" disabled={busy} onClick={() => void importWork()}>
-          <Plus size={18} strokeWidth={1.9} />
-          <span>{busy ? "导入中..." : "导入 RJ 作品"}</span>
-        </button>
+        <div className="asmr-import-actions">
+          <button type="button" className="asmr-import-button" disabled={busy} onClick={() => void importWork("copy")}>
+            <Copy size={17} strokeWidth={1.9} />
+            <span>{busy ? "导入中..." : "复制导入"}</span>
+          </button>
+          <button type="button" className="asmr-import-button is-move" disabled={busy} onClick={() => void importWork("move")} title="同一磁盘中通常可以快速完成">
+            <MoveRight size={17} strokeWidth={1.9} />
+            <span>{busy ? "导入中..." : "移动导入"}</span>
+          </button>
+        </div>
       </aside>
 
       <main className="asmr-main">
@@ -741,6 +784,14 @@ export function AsmrWorkspace() {
                     <option value={16}>16</option>
                   </select>
                 </label>
+                <button type="button" className="soft-button" disabled={!libraryPath} onClick={() => void openInExplorer(libraryPath)}>
+                  <FolderOpen size={16} strokeWidth={1.8} />
+                  打开资源目录
+                </button>
+                <button type="button" className="soft-button" disabled={busy} onClick={() => void bootstrapAsmr()}>
+                  <RefreshCw size={16} strokeWidth={1.8} />
+                  刷新
+                </button>
                 {activeFilter ? (
                   <button type="button" className="soft-button" onClick={() => setActiveFilter(null)}>
                     返回{sectionLabel}
@@ -837,7 +888,7 @@ export function AsmrWorkspace() {
               ) : (
                 <div className="empty-editor">
                   <h3>暂无 RJ 作品</h3>
-                  <p>导入一个本地作品目录后，MyVault 会复制资源并写入本地索引。</p>
+                  <p>可复制或移动本地作品目录，并写入 MyVault 本地索引。</p>
                 </div>
               )}
 
@@ -893,6 +944,10 @@ export function AsmrWorkspace() {
                       </div>
                     </div>
                     <div className="asmr-work-actions">
+                      <button type="button" className="soft-button" onClick={() => void openInExplorer(selectedWork.workDir)}>
+                        <FolderOpen size={16} strokeWidth={1.8} />
+                        在资源管理器中打开
+                      </button>
                       <button type="button" className="soft-button" onClick={() => startMetadataEdit(selectedWork)}>
                         编辑信息
                       </button>
