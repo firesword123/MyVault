@@ -55,7 +55,7 @@ fn handle_close_action(window: &Window) -> Result<(), String> {
             .map_err(|error| format!("failed to close window: {error}"));
     }
     let app = window.app_handle();
-    if close_behavior(&app) == "tray" {
+    if close_behavior(app) == "tray" {
         hide_window_to_tray(window)
     } else {
         window
@@ -94,7 +94,7 @@ fn setup_tray(app: &AppHandle) -> Result<(), String> {
                 ..
             } = event
             {
-                let _ = show_main_window(&tray.app_handle());
+                let _ = show_main_window(tray.app_handle());
             }
         })
         .build(app)
@@ -164,7 +164,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && close_behavior(&window.app_handle()) == "tray" {
+                if window.label() == "main" && close_behavior(window.app_handle()) == "tray" {
                     api.prevent_close();
                     let _ = hide_window_to_tray(window);
                 }

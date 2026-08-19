@@ -62,7 +62,9 @@ export type ResourceUsage = {
   appCpuPercent: number;
   webviewCpuPercent: number;
   totalCpuPercent: number;
+  appProcesses: number;
   webviewProcesses: number;
+  totalProcesses: number;
 };
 
 export type AsmrDictionaries = {

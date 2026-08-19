@@ -677,21 +677,21 @@ function App() {
   useEffect(() => {
     if (!settingsOpen && !settings.showMemoryInTitlebar) return;
     let alive = true;
-    const refresh = () => {
-      void invoke<ResourceUsage>("get_resource_usage").then(
-        (usage) => {
-          if (alive) setResourceUsage(usage);
-        },
-        () => {
-          if (alive) setResourceUsage(null);
-        },
-      );
+    let timer: number | undefined;
+    const refresh = async () => {
+      try {
+        const usage = await invoke<ResourceUsage>("get_resource_usage");
+        if (alive) setResourceUsage(usage);
+      } catch {
+        if (alive) setResourceUsage(null);
+      } finally {
+        if (alive) timer = window.setTimeout(() => void refresh(), 3000);
+      }
     };
-    refresh();
-    const interval = window.setInterval(refresh, 3000);
+    void refresh();
     return () => {
       alive = false;
-      window.clearInterval(interval);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [settingsOpen, settings.showMemoryInTitlebar]);
 
@@ -942,6 +942,7 @@ function App() {
         }
         showMemory={settings.showMemoryInTitlebar}
         memoryBytes={resourceUsage?.totalMemoryBytes ?? null}
+        processCount={resourceUsage?.totalProcesses ?? null}
         onSelectModule={(moduleId) => {
           if (settingsOpen) setSettingsOpen(false);
           if (moduleId === "notes") {

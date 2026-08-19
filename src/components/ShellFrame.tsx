@@ -13,6 +13,7 @@ type ShellFrameProps = {
   onOpenSettings: () => void;
   showMemory?: boolean;
   memoryBytes?: number | null;
+  processCount?: number | null;
   onMinimize?: () => void;
   onClose?: () => void;
 };
@@ -27,6 +28,7 @@ export function ShellFrame({
   onOpenSettings,
   showMemory,
   memoryBytes,
+  processCount,
   onMinimize,
   onClose,
 }: ShellFrameProps) {
@@ -42,6 +44,7 @@ export function ShellFrame({
         showSettings={false}
         showMemory={showMemory}
         memoryBytes={memoryBytes}
+        processCount={processCount}
         onMinimize={onMinimize}
         onClose={onClose}
       />

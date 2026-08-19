@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::{HashMap, HashSet, VecDeque},
     fs,
+    hash::Hash,
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -60,7 +62,9 @@ pub(crate) struct ResourceUsage {
     app_cpu_percent: f32,
     webview_cpu_percent: f32,
     total_cpu_percent: f32,
+    app_processes: usize,
     webview_processes: usize,
+    total_processes: usize,
 }
 
 fn default_language() -> String {
@@ -427,34 +431,31 @@ pub(crate) fn get_resource_usage() -> Result<ResourceUsage, String> {
     let mut app_cpu_percent = 0.0;
     let mut webview_memory_bytes = 0;
     let mut webview_cpu_percent = 0.0;
+    let mut app_processes = 0;
     let mut webview_processes = 0;
 
-    let app_processes = system
-        .processes()
-        .iter()
-        .filter_map(|(pid, process)| {
-            let name = process.name().to_ascii_lowercase();
-            (*pid == current_pid
-                || (name.contains("myvault") && is_descendant_process(&system, *pid, current_pid)))
-            .then_some(*pid)
-        })
-        .collect::<Vec<_>>();
+    // Build one bounded child index from the current process snapshot, then walk only the
+    // MyVault-owned tree. Do not repeatedly chase parent PIDs: Windows can reuse PIDs and a
+    // snapshot can therefore contain parent cycles that would otherwise spin forever.
+    let owned_processes = collect_descendant_processes(&system, current_pid);
 
-    for (pid, process) in system.processes() {
+    for pid in &owned_processes {
+        let Some(process) = system.process(*pid) else {
+            continue;
+        };
         let name = process.name().to_ascii_lowercase();
-        if app_processes.contains(pid) {
-            app_memory_bytes += process.memory();
-            app_cpu_percent += process.cpu_usage();
-        } else if name.contains("msedgewebview2")
-            && app_processes
-                .iter()
-                .any(|app_pid| is_descendant_process(&system, *pid, *app_pid))
-        {
+        if name == "msedgewebview2.exe" || name == "msedgewebview2" {
             webview_memory_bytes += process.memory();
             webview_cpu_percent += process.cpu_usage();
             webview_processes += 1;
+        } else {
+            app_memory_bytes += process.memory();
+            app_cpu_percent += process.cpu_usage();
+            app_processes += 1;
         }
     }
+
+    let total_processes = app_processes + webview_processes;
 
     Ok(ResourceUsage {
         app_memory_bytes,
@@ -463,19 +464,79 @@ pub(crate) fn get_resource_usage() -> Result<ResourceUsage, String> {
         app_cpu_percent,
         webview_cpu_percent,
         total_cpu_percent: app_cpu_percent + webview_cpu_percent,
+        app_processes,
         webview_processes,
+        total_processes,
     })
 }
 
-fn is_descendant_process(system: &System, pid: sysinfo::Pid, ancestor: sysinfo::Pid) -> bool {
-    let mut current = Some(pid);
-    while let Some(current_pid) = current {
-        if current_pid == ancestor {
-            return true;
-        }
-        current = system
-            .process(current_pid)
-            .and_then(|process| process.parent());
+const MAX_OWNED_PROCESSES: usize = 512;
+
+fn collect_descendant_processes(system: &System, root: sysinfo::Pid) -> HashSet<sysinfo::Pid> {
+    collect_descendants(
+        root,
+        system
+            .processes()
+            .iter()
+            .filter_map(|(pid, process)| process.parent().map(|parent| (parent, *pid))),
+        MAX_OWNED_PROCESSES,
+    )
+}
+
+fn collect_descendants<T, I>(root: T, parent_child_pairs: I, limit: usize) -> HashSet<T>
+where
+    T: Copy + Eq + Hash,
+    I: IntoIterator<Item = (T, T)>,
+{
+    let mut children = HashMap::<T, Vec<T>>::new();
+    for (parent, child) in parent_child_pairs {
+        children.entry(parent).or_default().push(child);
     }
-    false
+
+    let mut owned = HashSet::with_capacity(16);
+    let mut pending = VecDeque::with_capacity(16);
+    owned.insert(root);
+    pending.push_back(root);
+
+    while let Some(parent) = pending.pop_front() {
+        let Some(direct_children) = children.get(&parent) else {
+            continue;
+        };
+        for child in direct_children {
+            if owned.len() >= limit {
+                return owned;
+            }
+            if owned.insert(*child) {
+                pending.push_back(*child);
+            }
+        }
+    }
+
+    owned
+}
+
+#[cfg(test)]
+mod resource_usage_tests {
+    use super::collect_descendants;
+
+    #[test]
+    fn descendant_collection_stops_on_cycles() {
+        let owned = collect_descendants(1_u32, [(1, 2), (2, 3), (3, 2)], 512);
+        assert_eq!(owned.len(), 3);
+        assert!(owned.contains(&1));
+        assert!(owned.contains(&2));
+        assert!(owned.contains(&3));
+    }
+
+    #[test]
+    fn descendant_collection_ignores_unrelated_process_trees() {
+        let owned = collect_descendants(1_u32, [(1, 2), (8, 9), (9, 8)], 512);
+        assert_eq!(owned, [1, 2].into_iter().collect());
+    }
+
+    #[test]
+    fn descendant_collection_is_bounded() {
+        let owned = collect_descendants(1_u32, (1..1_000).map(|pid| (pid, pid + 1)), 32);
+        assert_eq!(owned.len(), 32);
+    }
 }

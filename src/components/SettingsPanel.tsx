@@ -321,7 +321,7 @@ export function SettingsPanel({
                       <strong>{formatCpu(resourceUsage.totalCpuPercent)}</strong>
                     </div>
                     <small>
-                      App {formatMemory(resourceUsage.appMemoryBytes)} / WebView{" "}
+                      MyVault {formatMemory(resourceUsage.appMemoryBytes)} ({resourceUsage.appProcesses}) / MyVault WebView{" "}
                       {formatMemory(resourceUsage.webviewMemoryBytes)} ({resourceUsage.webviewProcesses})
                     </small>
                   </>

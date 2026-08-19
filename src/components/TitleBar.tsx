@@ -15,6 +15,7 @@ type TitleBarProps = {
   showSettings?: boolean;
   showMemory?: boolean;
   memoryBytes?: number | null;
+  processCount?: number | null;
 };
 
 export function TitleBar({
@@ -29,6 +30,7 @@ export function TitleBar({
   showSettings = true,
   showMemory = false,
   memoryBytes = null,
+  processCount = null,
 }: TitleBarProps) {
   const moduleLabels: Record<string, string> = {
     notes: messages.moduleNotesLabel,
@@ -67,7 +69,8 @@ export function TitleBar({
       >
         {showMemory ? (
           <span className="titlebar-memory">
-            {messages.titlebarMemoryLabel} {memoryBytes === null ? "--" : `${(memoryBytes / 1024 / 1024).toFixed(0)} MB`}
+            MyVault · {messages.titlebarMemoryLabel} {memoryBytes === null ? "--" : `${(memoryBytes / 1024 / 1024).toFixed(0)} MB`}
+            {processCount === null ? "" : ` · ${processCount} ${messages.titlebarProcessLabel}`}
           </span>
         ) : null}
       </div>
