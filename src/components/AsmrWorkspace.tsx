@@ -925,7 +925,7 @@ export function AsmrWorkspace() {
                     </div>
                     <div className="asmr-work-copy">
                       <span className="section-label">{selectedWork.rjId}</span>
-                      <h2>{selectedWork.title || selectedWork.rjId}</h2>
+                      <h2 title={selectedWork.title || selectedWork.rjId}>{selectedWork.title || selectedWork.rjId}</h2>
                       <div className="asmr-work-meta">
                         <span>{selectedWork.circle || "社团未指定"}</span>
                         <span>{selectedWork.coverPath ? "已设置作品内封面" : "尚未设置封面"}</span>
@@ -963,7 +963,7 @@ export function AsmrWorkspace() {
                         {folderPath ? (
                           <>
                             <ChevronRight size={15} />
-                            <strong>{folderPath}</strong>
+                            <strong title={folderPath}>{folderPath}</strong>
                           </>
                         ) : null}
                       </div>
@@ -1018,7 +1018,7 @@ export function AsmrWorkspace() {
                             <FileIcon kind={file.kind} />
                           </span>
                           <span className="asmr-file-copy">
-                            <strong>{file.name}</strong>
+                            <strong title={file.name}>{file.name}</strong>
                             <small>{fileKindLabel(file)}</small>
                           </span>
                           {file.kind === "audio" ? <Play size={18} strokeWidth={1.85} /> : null}

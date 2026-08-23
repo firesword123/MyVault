@@ -9,7 +9,8 @@ param(
   [Alias('metadata-json')] [string]$MetadataJson,
   [ValidateSet('skip', 'create')]
   [string]$Missing = 'skip',
-  [switch]$Overwrite
+  [switch]$Overwrite,
+  [Alias('metadata-only')] [switch]$MetadataOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,7 +29,7 @@ function Path-IsWithin([string]$Candidate, [string]$Parent) {
   return $candidatePath.Equals($parentPath, [StringComparison]::OrdinalIgnoreCase) -or
     $candidatePath.StartsWith($parentPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
 }
-if ((Path-IsWithin $sourcePath $root) -or (Path-IsWithin $root $sourcePath)) {
+if (-not $MetadataOnly -and ((Path-IsWithin $sourcePath $root) -or (Path-IsWithin $root $sourcePath))) {
   Fail 'source and MyVault data root must not overlap'
 }
 $manifestPath = Join-Path $root '_MyVault\Manifest.json'
@@ -136,9 +137,28 @@ if ($existing) {
 }
 $files = @(Get-ChildItem -LiteralPath $sourcePath -File -Recurse)
 $folders = @(Get-ChildItem -LiteralPath $sourcePath -Directory -Recurse)
-$result = [ordered]@{ rjId = $rjId; source = $sourcePath; target = $workDir; alreadyExists = [bool]($existing -or $targetExists); fileCount = $files.Count; folderCount = $folders.Count; skipped = @($skipped); missingMode = $Missing }
+$result = [ordered]@{ rjId = $rjId; source = $sourcePath; target = $workDir; alreadyExists = [bool]($existing -or $targetExists); fileCount = $files.Count; folderCount = $folders.Count; skipped = @($skipped); missingMode = $Missing; metadataOnly = [bool]$MetadataOnly }
 if ($Command -eq 'preview') { $result | ConvertTo-Json -Depth 10; exit 0 }
 if (($existing -or $targetExists) -and -not $Overwrite) { Fail "$rjId already exists; pass --Overwrite to replace files and metadata" }
+if ($MetadataOnly) {
+  if (-not $existing) { Fail "metadata-only import requires an existing indexed work: $rjId" }
+  $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+  $work = [pscustomobject]@{ rjId=$rjId; title=($(if ($title) {$title} else {$rjId})); circle=$circle; voiceActors=@($voices); tags=@($tags); status=$(if ($existing.status) {$existing.status} else {'new'}); favorite=$(if ($null -ne $existing.favorite) {[bool]$existing.favorite} else {$false}); rating=$(if ($existing) {$existing.rating} else {$null}); note=$note; workDir="DL_ASMR/$rjId"; filesDir="DL_ASMR/$rjId"; coverPath=$existing.coverPath; thumbnailPath=$existing.thumbnailPath; lastOpenedFolder=$existing.lastOpenedFolder; lastPlayedAudioPath=$existing.lastPlayedAudioPath; lastPositionMs=$existing.lastPositionMs; importedAt=$(if ($existing.importedAt) {$existing.importedAt} else {$stamp}); updatedAt=$stamp }
+  $index.works = @($index.works | Where-Object { $_.rjId -ne $rjId }) + $work
+  if ($Missing -eq 'create') {
+    foreach ($value in $tags) { if (-not (Known $value @($index.dictionaries.tags))) { $index.dictionaries.tags += $value } }
+    foreach ($value in $voices) { if (-not (Known $value @($index.dictionaries.voiceActors))) { $index.dictionaries.voiceActors += $value } }
+    if ($circle -and -not (Known $circle @($index.dictionaries.circles))) { $index.dictionaries.circles += $circle }
+  }
+  $index.version = 2
+  Write-Utf8NoBom (Join-Path $workDir '_Work.json') $work
+  $tempIndex = "$indexPath.importing-" + [guid]::NewGuid().ToString('N')
+  Write-Utf8NoBom $tempIndex $index
+  if (Test-Path -LiteralPath $indexPath) { [IO.File]::Replace($tempIndex, $indexPath, "$indexPath.bak", $true) } else { Move-Item -LiteralPath $tempIndex -Destination $indexPath }
+  $result.work = $work; $result.imported = $true
+  $result | ConvertTo-Json -Depth 20
+  $agentMutex.ReleaseMutex(); $agentMutex.Dispose(); exit 0
+}
 New-Item -ItemType Directory -Force -Path $asmrDir | Out-Null
 
 $stamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()

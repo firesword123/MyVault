@@ -70,7 +70,7 @@ Startup should restore only the necessary main-window state. It should not eager
 
 ## Media Feature Rules
 
-The removed Gallery module, not the DL_ASMR module, produced the observed 1-2 GB growth after browsing many images and the incomplete return to cold-start memory. It showed that WebView2 image and GPU caches are not a reliable resource-management boundary.
+An earlier in-process Gallery implementation produced the observed 1-2 GB growth after browsing many images and did not reliably return to its cold-start baseline. The current Gallery therefore runs as the independently releasable `myvault-gallery.exe` sidecar, uses paged thumbnails, and keeps its cache disposable.
 
 Any future media feature should assume that WebView2 may keep decoded image or GPU resources longer than the React component lifecycle.
 
@@ -108,7 +108,7 @@ Classification guidance:
 | Player queue, one audio element, volume and next/previous controls | `myvault.exe` notes WebView sidebar | Sidebar lifetime; the queue and media source are cleared on unmount |
 | DL_ASMR work library, metadata, import and file browsing | `myvault-dl-asmr.exe` | DL_ASMR browser window lifetime |
 | DL_ASMR playback request | Named-pipe message from DL_ASMR to main | One bounded queue-transfer message |
-| Gallery browsing and image decode resources | Future standalone gallery module | Gallery window lifetime; no background persistence |
+| Gallery browsing and image decode resources | `myvault-gallery.exe` | Gallery window lifetime; no background persistence |
 
 Only track metadata and file paths cross the process boundary. React state, DOM nodes, cover images, decoded media, and WebView instances never cross it.
 
@@ -118,4 +118,4 @@ Both executables receive one resolved `MyVaultData` root. The main process owns 
 
 Resolution order is: explicit test override, `MYVAULT_DATA_ROOT`, an optional `myvault.data-route.json` beside the executable, then the platform default. Debug builds default to the current workspace's `.dev-data/MyVaultData`; packaged builds default to a `MyVaultData` directory beside the application directory.
 
-Version 0.1.9 was the one-release transition that copied v1 `myvault-data` into schema 2. Version 0.1.10 removes runtime discovery and migration of v1 completely; it only reads `MyVaultData`. Existing `myvault-data` directories are ignored and never deleted. On the first DL_ASMR module open, version 0.1.10 performs a narrowly scoped repair for the 0.1.9 relative-path error and archives duplicate root-level work metadata before removing empty erroneous RJ directories.
+Version 0.1.9 was the one-release transition that copied v1 `myvault-data` into schema 2. Version 0.1.10 removed runtime discovery and migration of v1 completely; current releases only read `MyVaultData`. Existing `myvault-data` directories are ignored and never deleted. Direct upgrades from affected releases run narrowly scoped, marker-backed DL_ASMR repairs once; normal index loads do not repeat completed migrations.

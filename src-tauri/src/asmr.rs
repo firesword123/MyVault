@@ -1,6 +1,6 @@
 use crate::core::{
-    asmr_index_path, asmr_works_dir, atomic_write_utf8_file, data_root_dir, ensure_asmr_layout,
-    now_ts, read_utf8_file,
+    asmr_dir, asmr_index_path, atomic_write_utf8_file, data_root_dir, ensure_asmr_layout, now_ts,
+    read_utf8_file,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -188,6 +188,11 @@ struct CoverStorageMigrationReport {
     preserved_ambiguous_covers: Vec<String>,
 }
 
+struct PathRepairResult {
+    repaired_paths: Vec<String>,
+    archived_root_metadata: Vec<String>,
+}
+
 fn default_asmr_index() -> AsmrIndex {
     AsmrIndex {
         version: crate::storage::DATA_SCHEMA_VERSION,
@@ -332,18 +337,37 @@ fn load_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
         }
     };
     normalize_asmr_index(&mut index);
-    let repaired_paths = repair_0_1_9_work_paths(&mut index);
+    let repair = run_0_1_10_path_repair(app, &mut index)?;
     reconcile_asmr_index(app, &mut index)?;
     let cover_migration = migrate_legacy_cover_storage(app, &mut index)?;
     save_asmr_index(app, &index)?;
     if let Some(report) = cover_migration {
         write_cover_storage_migration_report(app, &report)?;
     }
-    let archived_root_metadata = archive_misrouted_root_metadata(app, &index)?;
-    if !repaired_paths.is_empty() || !archived_root_metadata.is_empty() {
-        write_0_1_10_repair_report(app, &repaired_paths, &archived_root_metadata)?;
+    if let Some(repair) = repair {
+        write_0_1_10_repair_report(app, &repair.repaired_paths, &repair.archived_root_metadata)?;
     }
     Ok(index)
+}
+
+fn path_repair_marker(root: &Path) -> PathBuf {
+    root.join("_MyVault/Migrations/DL_ASMR-Paths-0.1.10.json")
+}
+
+fn run_0_1_10_path_repair(
+    app: &AppHandle,
+    index: &mut AsmrIndex,
+) -> Result<Option<PathRepairResult>, String> {
+    let root = data_root_dir(app)?;
+    if path_repair_marker(&root).is_file() {
+        return Ok(None);
+    }
+    let repaired_paths = repair_0_1_9_work_paths(index);
+    let archived_root_metadata = archive_misrouted_root_metadata_at(&root, index)?;
+    Ok(Some(PathRepairResult {
+        repaired_paths,
+        archived_root_metadata,
+    }))
 }
 
 fn repair_0_1_9_work_paths(index: &mut AsmrIndex) -> Vec<String> {
@@ -377,14 +401,6 @@ fn repair_0_1_9_work_paths(index: &mut AsmrIndex) -> Vec<String> {
     repaired.sort();
     repaired.dedup();
     repaired
-}
-
-fn archive_misrouted_root_metadata(
-    app: &AppHandle,
-    index: &AsmrIndex,
-) -> Result<Vec<String>, String> {
-    let root = data_root_dir(app)?;
-    archive_misrouted_root_metadata_at(&root, index)
 }
 
 fn archive_misrouted_root_metadata_at(
@@ -451,9 +467,8 @@ fn write_0_1_10_repair_report(
     archived_root_metadata: &[String],
 ) -> Result<(), String> {
     let repaired_at = now_ts();
-    let path = data_root_dir(app)?
-        .join("_MyVault/RepairReports")
-        .join(format!("dl-asmr-paths-0.1.10-{repaired_at}.json"));
+    let root = data_root_dir(app)?;
+    let path = path_repair_marker(&root);
     let raw = serde_json::to_string_pretty(&serde_json::json!({
         "version": "0.1.10",
         "repairedAt": repaired_at,
@@ -462,7 +477,7 @@ fn write_0_1_10_repair_report(
     }))
     .map_err(|error| format!("failed to serialize DL_ASMR repair report: {error}"))?;
     atomic_write_utf8_file(&path, &raw)
-        .map_err(|error| format!("failed to save DL_ASMR repair report: {error}"))
+        .map_err(|error| format!("failed to save DL_ASMR repair marker: {error}"))
 }
 
 fn cover_storage_migration_path(root: &Path) -> PathBuf {
@@ -966,7 +981,7 @@ fn hydrate_work(app: &AppHandle, work: &AsmrWork) -> Result<AsmrWork, String> {
 }
 
 fn asmr_work_dir(app: &AppHandle, rj_id: &str) -> Result<PathBuf, String> {
-    Ok(asmr_works_dir(app)?.join(normalize_rj_id(rj_id)?))
+    Ok(asmr_dir(app)?.join(normalize_rj_id(rj_id)?))
 }
 
 fn indexed_work_files_dir(
@@ -1265,17 +1280,20 @@ fn find_default_asmr_folder(files_dir: &Path) -> Result<Option<String>, String> 
     Ok(best)
 }
 
-fn scan_asmr_import_source(
-    source: &Path,
-) -> Result<(u64, u64, u64, u64, u64, u64, u64, u64), String> {
-    let mut file_count = 0;
-    let mut folder_count = 0;
-    let mut total_size = 0;
-    let mut audio_count = 0;
-    let mut subtitle_count = 0;
-    let mut image_count = 0;
-    let mut other_count = 0;
-    let mut associated_subtitle_count = 0;
+#[derive(Default)]
+struct AsmrImportStats {
+    file_count: u64,
+    folder_count: u64,
+    total_size: u64,
+    audio_count: u64,
+    subtitle_count: u64,
+    image_count: u64,
+    other_count: u64,
+    associated_subtitle_count: u64,
+}
+
+fn scan_asmr_import_source(source: &Path) -> Result<AsmrImportStats, String> {
+    let mut stats = AsmrImportStats::default();
     let mut directories = vec![source.to_path_buf()];
 
     while let Some(current) = directories.pop() {
@@ -1288,7 +1306,7 @@ fn scan_asmr_import_source(
                 .file_type()
                 .map_err(|error| format!("failed to inspect source entry: {error}"))?;
             if file_type.is_dir() {
-                folder_count += 1;
+                stats.folder_count += 1;
                 directories.push(path);
                 continue;
             }
@@ -1296,37 +1314,28 @@ fn scan_asmr_import_source(
                 continue;
             }
 
-            file_count += 1;
-            total_size += entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            stats.file_count += 1;
+            stats.total_size += entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             let extension = path
                 .extension()
                 .map(|extension| extension.to_string_lossy().to_string())
                 .unwrap_or_default();
             if is_audio_extension(&extension) {
-                audio_count += 1;
+                stats.audio_count += 1;
                 if subtitle_for_audio(source, &path).is_some() {
-                    associated_subtitle_count += 1;
+                    stats.associated_subtitle_count += 1;
                 }
             } else if is_subtitle_extension(&extension) {
-                subtitle_count += 1;
+                stats.subtitle_count += 1;
             } else if is_supported_image_file(&path) {
-                image_count += 1;
+                stats.image_count += 1;
             } else {
-                other_count += 1;
+                stats.other_count += 1;
             }
         }
     }
 
-    Ok((
-        file_count,
-        folder_count,
-        total_size,
-        audio_count,
-        subtitle_count,
-        image_count,
-        other_count,
-        associated_subtitle_count,
-    ))
+    Ok(stats)
 }
 
 #[tauri::command]
@@ -1340,7 +1349,7 @@ pub(crate) fn bootstrap_asmr(app: AppHandle) -> Result<AsmrBootstrapPayload, Str
             .map(|work| hydrate_work(&app, work))
             .collect::<Result<Vec<_>, _>>()?,
         dictionaries: index.dictionaries,
-        library_path: frontend_absolute_path(&asmr_works_dir(&app)?),
+        library_path: frontend_absolute_path(&asmr_dir(&app)?),
     })
 }
 
@@ -1360,29 +1369,20 @@ pub(crate) fn preview_asmr_import(
         _ => extract_rj_id_from_path(&source).ok_or_else(|| "RJ id is required".to_string())?,
     };
     let index = load_asmr_index(&app)?;
-    let (
-        file_count,
-        folder_count,
-        total_size,
-        audio_count,
-        subtitle_count,
-        image_count,
-        other_count,
-        associated_subtitle_count,
-    ) = scan_asmr_import_source(&source)?;
+    let stats = scan_asmr_import_source(&source)?;
 
     Ok(AsmrImportPreview {
         source_path: source.display().to_string(),
         rj_id: rj_id.clone(),
         already_exists: index.works.iter().any(|work| work.rj_id == rj_id),
-        file_count,
-        folder_count,
-        total_size,
-        audio_count,
-        subtitle_count,
-        image_count,
-        other_count,
-        associated_subtitle_count,
+        file_count: stats.file_count,
+        folder_count: stats.folder_count,
+        total_size: stats.total_size,
+        audio_count: stats.audio_count,
+        subtitle_count: stats.subtitle_count,
+        image_count: stats.image_count,
+        other_count: stats.other_count,
+        associated_subtitle_count: stats.associated_subtitle_count,
         default_folder: find_default_asmr_folder(&source)?,
     })
 }
@@ -1398,7 +1398,7 @@ fn asmr_payload_from_index(
             .map(|work| hydrate_work(app, work))
             .collect::<Result<Vec<_>, _>>()?,
         dictionaries: index.dictionaries,
-        library_path: frontend_absolute_path(&asmr_works_dir(app)?),
+        library_path: frontend_absolute_path(&asmr_dir(app)?),
     })
 }
 

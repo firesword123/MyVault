@@ -693,6 +693,7 @@ export function EditorWorkspace({
 }: EditorWorkspaceProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const colorInputRef = useRef<HTMLInputElement | null>(null);
+  const selectionRangeRef = useRef<Range | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -717,20 +718,73 @@ export function EditorWorkspace({
     onContentChange(editorRef.current?.innerHTML ?? "");
   }
 
+  function editorSelectionRange() {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || selection.rangeCount === 0) return null;
+    const range = selection.getRangeAt(0);
+    return editor.contains(range.commonAncestorContainer) ? range : null;
+  }
+
+  function rememberSelection() {
+    selectionRangeRef.current = editorSelectionRange()?.cloneRange() ?? null;
+  }
+
+  function restoreEditorRange() {
+    const range = editorSelectionRange() ?? selectionRangeRef.current;
+    const editor = editorRef.current;
+    if (!range || !editor || !editor.contains(range.commonAncestorContainer)) return null;
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return range;
+  }
+
+  function selectAfter(node: Node) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.setStartAfter(node);
+    range.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    selectionRangeRef.current = range.cloneRange();
+  }
+
   function handleEditorInput(_event: FormEvent<HTMLDivElement>) {
+    rememberSelection();
     emitEditorContent();
   }
 
   function handleEditorPaste(event: ClipboardEvent<HTMLDivElement>) {
     event.preventDefault();
     const text = event.clipboardData.getData("text/plain");
-    document.execCommand("insertText", false, text);
+    const range = restoreEditorRange();
+    if (!range) return;
+    range.deleteContents();
+    const fragment = document.createDocumentFragment();
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    lines.forEach((line, index) => {
+      if (index > 0) fragment.appendChild(document.createElement("br"));
+      fragment.appendChild(document.createTextNode(line));
+    });
+    const lastNode = fragment.lastChild;
+    range.insertNode(fragment);
+    if (lastNode) selectAfter(lastNode);
     emitEditorContent();
   }
 
-  function applyCommand(command: string, value?: string) {
-    editorRef.current?.focus();
-    document.execCommand(command, false, value);
+  function applyInlineFormat(kind: "bold" | "color", value?: string) {
+    const range = restoreEditorRange();
+    if (!range || range.collapsed) return;
+    const wrapper = kind === "bold" ? document.createElement("strong") : document.createElement("span");
+    if (kind === "color" && value) wrapper.style.color = value;
+    wrapper.appendChild(range.extractContents());
+    range.insertNode(wrapper);
+    const selection = window.getSelection();
+    range.selectNodeContents(wrapper);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    selectionRangeRef.current = range.cloneRange();
     emitEditorContent();
   }
 
@@ -743,19 +797,6 @@ export function EditorWorkspace({
       setCopyState("idle");
       copyResetTimerRef.current = null;
     }, 1600);
-  }
-
-  function legacyCopyText(text: string) {
-    const input = document.createElement("textarea");
-    input.value = text;
-    input.setAttribute("readonly", "");
-    input.style.position = "fixed";
-    input.style.opacity = "0";
-    document.body.appendChild(input);
-    input.select();
-    const copied = document.execCommand("copy");
-    input.remove();
-    return copied;
   }
 
   async function copyAllContent() {
@@ -772,19 +813,18 @@ export function EditorWorkspace({
             "text/html": new Blob([richText], { type: "text/html" }),
           }),
         ]);
-      } else if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(plainText);
-      } else if (!legacyCopyText(plainText)) {
+      } else if (!navigator.clipboard?.writeText) {
         throw new Error("clipboard is unavailable");
+      } else {
+        await navigator.clipboard.writeText(plainText);
       }
       showCopyState("copied");
     } catch {
       try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(plainText);
-        } else if (!legacyCopyText(plainText)) {
+        if (!navigator.clipboard?.writeText) {
           throw new Error("clipboard is unavailable");
         }
+        await navigator.clipboard.writeText(plainText);
         showCopyState("copied");
       } catch {
         showCopyState("failed");
@@ -814,6 +854,7 @@ export function EditorWorkspace({
             data-placeholder={messages.editorPlaceholder}
             onInput={handleEditorInput}
             onPaste={handleEditorPaste}
+            onSelect={rememberSelection}
           />
 
           <div className="editor-bottom-bar">
@@ -823,7 +864,7 @@ export function EditorWorkspace({
                 className="soft-button"
                 disabled={activeNote.isTrashed}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => applyCommand("bold")}
+                onClick={() => applyInlineFormat("bold")}
                 aria-label={messages.boldButton}
                 title={messages.boldButton}
               >
@@ -838,7 +879,7 @@ export function EditorWorkspace({
                   disabled={activeNote.isTrashed}
                   style={{ ["--swatch-color" as string]: color }}
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => applyCommand("foreColor", color)}
+                  onClick={() => applyInlineFormat("color", color)}
                   aria-label={messages.applyColorLabel.replace("{color}", color)}
                   title={color}
                 />
@@ -849,7 +890,10 @@ export function EditorWorkspace({
                 className="soft-button"
                 disabled={activeNote.isTrashed}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => colorInputRef.current?.click()}
+                onClick={() => {
+                  rememberSelection();
+                  colorInputRef.current?.click();
+                }}
                 aria-label={messages.customColorButton}
                 title={messages.customColorButton}
               >
@@ -878,7 +922,7 @@ export function EditorWorkspace({
                 className="visually-hidden"
                 type="color"
                 defaultValue={colorPresets[0] || "#3b82f6"}
-                onChange={(event) => applyCommand("foreColor", event.target.value)}
+                onChange={(event) => applyInlineFormat("color", event.target.value)}
               />
             </div>
 

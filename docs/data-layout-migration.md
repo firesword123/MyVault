@@ -69,7 +69,7 @@ For the installed 0.1.8 data inspected on 2026-07-21, the acceptance baseline is
 
 Version 0.1.10 removes all v1 discovery and migration from startup. It neither reads nor modifies any surviving `myvault-data` directory. If `MyVaultData` does not exist, the application creates a new schema-2 root; if a nonempty root has no valid schema-2 manifest, startup fails instead of adopting it.
 
-When the DL_ASMR module is first opened, version 0.1.10 repairs a 0.1.9 path error where `workDir`, `filesDir`, and `coverPath` could omit the `DL_ASMR/` prefix. The repaired index uses data-root-relative paths such as `DL_ASMR/RJ123456`. If a mistaken root-level `RJxxxxxx` directory contains only duplicate `_Work.json` metadata, those files are moved to `_MyVault/Backups/Repair-0.1.10` and the empty directory is removed. Any directory containing other files is left untouched. A repair report is written under `_MyVault/RepairReports`.
+On the first DL_ASMR index load after a direct upgrade from an affected release, MyVault repairs a 0.1.9 path error where `workDir`, `filesDir`, and `coverPath` could omit the `DL_ASMR/` prefix. The repaired index uses data-root-relative paths such as `DL_ASMR/RJ123456`. If a mistaken root-level `RJxxxxxx` directory contains only duplicate `_Work.json` metadata, those files are moved to `_MyVault/Backups/Repair-0.1.10` and the empty directory is removed. Any directory containing other files is left untouched. Completion and results are recorded in `_MyVault/Migrations/DL_ASMR-Paths-0.1.10.json`; subsequent index loads skip this repair.
 
 ## 0.1.12 cover storage migration
 

@@ -165,7 +165,7 @@ pub(crate) fn vault_dir(app: &AppHandle) -> Result<PathBuf, String> {
     data_root_dir(app)
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Used by independently compiled sidecar binaries.
 pub(crate) fn set_data_root_override(path: PathBuf) -> Result<(), String> {
     crate::storage::set_data_root_override(path)
 }
@@ -178,7 +178,8 @@ fn images_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_root_dir(app)?.join("Attachments"))
 }
 
-fn asmr_dir(app: &AppHandle) -> Result<PathBuf, String> {
+#[allow(dead_code)] // Used by the DL_ASMR sidecar binary.
+pub(crate) fn asmr_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_root_dir(app)?.join("DL_ASMR"))
 }
 
@@ -195,12 +196,7 @@ pub(crate) fn gallery_cache_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .join("Gallery"))
 }
 
-#[allow(dead_code)]
-pub(crate) fn asmr_works_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    asmr_dir(app)
-}
-
-#[allow(dead_code)]
+#[allow(dead_code)] // Used by the DL_ASMR sidecar binary.
 pub(crate) fn asmr_index_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(asmr_dir(app)?.join("_Library.json"))
 }
@@ -282,15 +278,12 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[allow(dead_code)]
+#[allow(dead_code)] // Used by the DL_ASMR sidecar binary.
 pub(crate) fn ensure_asmr_layout(app: &AppHandle) -> Result<(), String> {
     let vault = crate::storage::prepare_data_root(app)?;
     let asmr = asmr_dir(app)?;
-    let asmr_works = asmr_works_dir(app)?;
     fs::create_dir_all(&vault).map_err(|error| format!("failed to create vault dir: {error}"))?;
-    fs::create_dir_all(&asmr).map_err(|error| format!("failed to create asmr dir: {error}"))?;
-    fs::create_dir_all(&asmr_works)
-        .map_err(|error| format!("failed to create asmr works dir: {error}"))
+    fs::create_dir_all(&asmr).map_err(|error| format!("failed to create asmr dir: {error}"))
 }
 
 #[allow(dead_code)]
@@ -364,6 +357,12 @@ pub(crate) fn write_utf8_file(path: &Path, content: &str) -> Result<(), String> 
 }
 
 pub(crate) fn atomic_write_utf8_file(path: &Path, content: &str) -> Result<(), String> {
+    if fs::read(path)
+        .map(|existing| existing == content.as_bytes())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }

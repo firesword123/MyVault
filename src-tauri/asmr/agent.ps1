@@ -6,7 +6,7 @@ param(
   [Alias('metadata-file')] [string]$MetadataFile,
   [Alias('metadata-json')] [string]$MetadataJson,
   [ValidateSet('skip', 'create')] [string]$Missing = 'skip',
-  [switch]$Overwrite
+  [switch]$Overwrite, [Alias('metadata-only')] [switch]$MetadataOnly
 )
 
 # The implementation lives with the repository scripts; this module-local entrypoint
