@@ -43,6 +43,70 @@ pub(crate) fn clear_player_queue(state: State<'_, PlayerState>) -> Result<(), St
     Ok(())
 }
 
+pub(crate) fn validate_player_queue(app: &AppHandle, payload: &Value) -> Result<(), String> {
+    let tracks = payload
+        .get("tracks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "player queue tracks are missing".to_string())?;
+    if tracks.is_empty() || tracks.len() > 2_000 {
+        return Err("player queue must contain between 1 and 2000 tracks".to_string());
+    }
+    let start_index = payload
+        .get("startIndex")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "player queue start index is missing".to_string())?
+        as usize;
+    if start_index >= tracks.len() {
+        return Err("player queue start index is out of range".to_string());
+    }
+    let vault = crate::core::vault_dir(app)?
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve Vault path: {error}"))?;
+    for track in tracks {
+        for field in [
+            "id",
+            "title",
+            "workId",
+            "workTitle",
+            "absolutePath",
+            "relativePath",
+        ] {
+            if track
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .is_none()
+            {
+                return Err(format!("player queue track field {field} is missing"));
+            }
+        }
+        let absolute_path = std::path::PathBuf::from(
+            track
+                .get("absolutePath")
+                .and_then(Value::as_str)
+                .expect("absolutePath was validated"),
+        )
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve playback file: {error}"))?;
+        if !absolute_path.starts_with(&vault) || !absolute_path.is_file() {
+            return Err("player queue track is outside the active Vault".to_string());
+        }
+        if let Some(subtitle_path) = track.get("subtitlePath").and_then(Value::as_str) {
+            let normalized = subtitle_path.replace('\\', "/");
+            let path = Path::new(&normalized);
+            if normalized.is_empty()
+                || path.is_absolute()
+                || normalized
+                    .split('/')
+                    .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+            {
+                return Err("player queue subtitle path is invalid".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn normalize_work_id(value: &str) -> Result<String, String> {
     let value = value.trim().to_ascii_uppercase();
     if value.len() > 2
@@ -125,29 +189,19 @@ fn is_descendant_process(system: &System, pid: sysinfo::Pid, ancestor: sysinfo::
 }
 
 #[tauri::command]
-pub(crate) fn trim_player_memory() -> Result<u32, String> {
+pub(crate) fn trim_player_memory(app: AppHandle) -> Result<u32, String> {
+    if app.state::<crate::ExperimentMode>().0 {
+        return Ok(0); // Don't disguise retained memory by paging it out in the experiment.
+    }
     let mut system = System::new_all();
     system.refresh_processes();
     let current_pid =
         get_current_pid().map_err(|error| format!("failed to resolve MyVault pid: {error}"))?;
-    let sidecar_roots = system
-        .processes()
-        .iter()
-        .filter_map(|(pid, process)| {
-            let name = process.name().to_ascii_lowercase();
-            (name.contains("myvault-dl-asmr") && is_descendant_process(&system, *pid, current_pid))
-                .then_some(*pid)
-        })
-        .collect::<Vec<_>>();
     let mut targets = vec![current_pid];
     targets.extend(system.processes().iter().filter_map(|(pid, process)| {
         let name = process.name().to_ascii_lowercase();
-        (name.contains("msedgewebview2")
-            && is_descendant_process(&system, *pid, current_pid)
-            && !sidecar_roots
-                .iter()
-                .any(|sidecar| is_descendant_process(&system, *pid, *sidecar)))
-        .then_some(*pid)
+        (name.contains("msedgewebview2") && is_descendant_process(&system, *pid, current_pid))
+            .then_some(*pid)
     }));
 
     let mut trimmed = 0_u32;

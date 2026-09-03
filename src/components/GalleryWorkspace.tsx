@@ -12,12 +12,13 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useEmbeddedGuard } from "../useEmbeddedGuard";
 
 type GalleryItem = {
   relativePath: string;
   fileName: string;
   originalPath: string;
-  thumbnailPath: string;
+  thumbnailId: string;
 };
 
 type GalleryPage = {
@@ -35,6 +36,7 @@ type ImportResult = {
 };
 
 const PAGE_SIZE = 48;
+const SHELL_THUMBNAIL_ORIGIN = "http://myvault-thumbnail.localhost";
 const IMAGE_FILTERS = [
   {
     name: "图片",
@@ -54,6 +56,7 @@ export function GalleryWorkspace() {
   const [message, setMessage] = useState("正在加载图库…");
   const requestId = useRef(0);
   const currentPage = useRef(1);
+  useEmbeddedGuard(busy ? "图库仍在加载或导入，请完成后再切换" : null);
 
   const loadPage = useCallback(async (page: number, refresh = false) => {
     const currentRequest = ++requestId.current;
@@ -198,7 +201,7 @@ export function GalleryWorkspace() {
               >
                 <span className="gallery-thumbnail-frame">
                   <img
-                    src={convertFileSrc(item.thumbnailPath)}
+                    src={`${SHELL_THUMBNAIL_ORIGIN}/${item.thumbnailId}`}
                     alt={item.fileName}
                     loading="lazy"
                     decoding="async"

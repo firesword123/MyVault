@@ -1,13 +1,11 @@
-use image::{codecs::jpeg::JpegEncoder, ImageReader};
+use image::ImageReader;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map::DefaultHasher, HashSet},
     fs,
     hash::{Hash, Hasher},
-    io::BufWriter,
     path::{Path, PathBuf},
     sync::Mutex,
-    thread,
     time::UNIX_EPOCH,
 };
 use tauri::{AppHandle, State};
@@ -15,21 +13,27 @@ use uuid::Uuid;
 
 const DEFAULT_PAGE_SIZE: usize = 48;
 const MAX_PAGE_SIZE: usize = 96;
-const THUMBNAIL_EDGE: u32 = 480;
-const CACHE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
-const CACHE_TARGET_BYTES: u64 = 384 * 1024 * 1024;
+static COMMAND_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn release_catalog(state: &GalleryState) -> Result<(), String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "gallery command lock is poisoned")?;
+    invalidate_catalog(state)
+}
 
 #[derive(Clone)]
 struct GalleryRecord {
     absolute_path: PathBuf,
     relative_path: String,
     file_name: String,
-    cache_name: String,
+    thumbnail_id: String,
 }
 
 #[derive(Default)]
 pub(crate) struct GalleryState {
     catalog: Mutex<Option<Vec<GalleryRecord>>>,
+    visible_thumbnail_ids: Mutex<HashSet<String>>,
 }
 
 #[derive(Deserialize)]
@@ -52,7 +56,7 @@ pub(crate) struct GalleryItem {
     relative_path: String,
     file_name: String,
     original_path: String,
-    thumbnail_path: String,
+    thumbnail_id: String,
 }
 
 #[derive(Serialize)]
@@ -88,7 +92,7 @@ fn is_supported_image(path: &Path) -> bool {
         .is_some()
 }
 
-fn cache_name(relative_path: &str, metadata: &fs::Metadata) -> String {
+fn thumbnail_id(relative_path: &str, metadata: &fs::Metadata) -> String {
     let mut hasher = DefaultHasher::new();
     relative_path.hash(&mut hasher);
     metadata.len().hash(&mut hasher);
@@ -99,7 +103,7 @@ fn cache_name(relative_path: &str, metadata: &fs::Metadata) -> String {
         .map(|value| value.as_nanos())
         .unwrap_or_default()
         .hash(&mut hasher);
-    format!("{:016x}.jpg", hasher.finish())
+    format!("{:016x}", hasher.finish())
 }
 
 fn scan_gallery(root: &Path) -> Result<Vec<GalleryRecord>, String> {
@@ -134,7 +138,7 @@ fn scan_gallery(root: &Path) -> Result<Vec<GalleryRecord>, String> {
             records.push(GalleryRecord {
                 absolute_path: path,
                 file_name: entry.file_name().to_string_lossy().into_owned(),
-                cache_name: cache_name(&relative_path, &metadata),
+                thumbnail_id: thumbnail_id(&relative_path, &metadata),
                 relative_path,
             });
         }
@@ -147,82 +151,37 @@ fn scan_gallery(root: &Path) -> Result<Vec<GalleryRecord>, String> {
     Ok(records)
 }
 
-fn clean_cache(cache: &Path, records: &[GalleryRecord]) -> Result<(), String> {
-    fs::create_dir_all(cache)
-        .map_err(|error| format!("failed to create gallery cache: {error}"))?;
-    let expected = records
-        .iter()
-        .map(|record| record.cache_name.as_str())
-        .collect::<HashSet<_>>();
-    let mut cache_files = Vec::new();
-    let mut total_bytes = 0u64;
-    for entry in
-        fs::read_dir(cache).map_err(|error| format!("failed to read gallery cache: {error}"))?
-    {
-        let entry = entry.map_err(|error| format!("failed to read gallery cache: {error}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("failed to inspect gallery cache: {error}"))?;
-        if !file_type.is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if !expected.contains(name.as_str()) {
-            let _ = fs::remove_file(entry.path());
-            continue;
-        }
-        let metadata = entry
-            .metadata()
-            .map_err(|error| format!("failed to inspect gallery cache: {error}"))?;
-        total_bytes = total_bytes.saturating_add(metadata.len());
-        cache_files.push((
-            entry.path(),
-            metadata.modified().unwrap_or(UNIX_EPOCH),
-            metadata.len(),
-        ));
-    }
-    if total_bytes <= CACHE_LIMIT_BYTES {
-        return Ok(());
-    }
-    cache_files.sort_by_key(|(_, modified, _)| *modified);
-    for (path, _, size) in cache_files {
-        if total_bytes <= CACHE_TARGET_BYTES {
-            break;
-        }
-        if fs::remove_file(path).is_ok() {
-            total_bytes = total_bytes.saturating_sub(size);
-        }
-    }
-    Ok(())
+fn is_owned_legacy_thumbnail(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".jpg") else {
+        return name.starts_with(".thumb-") && name.ends_with(".tmp");
+    };
+    stem.len() == 16 && stem.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn ensure_thumbnail(record: &GalleryRecord, cache: &Path) -> Result<PathBuf, String> {
-    let target = cache.join(&record.cache_name);
-    if target.is_file() {
-        return Ok(target);
+fn retire_legacy_thumbnail_cache(cache: &Path) -> Result<(), String> {
+    if !cache.is_dir() {
+        return Ok(());
     }
-    let image = ImageReader::open(&record.absolute_path)
-        .map_err(|error| format!("failed to open image: {error}"))?
-        .with_guessed_format()
-        .map_err(|error| format!("failed to identify image: {error}"))?
-        .decode()
-        .map_err(|error| format!("failed to decode image: {error}"))?;
-    let thumbnail = image.thumbnail(THUMBNAIL_EDGE, THUMBNAIL_EDGE).to_rgb8();
-    let temporary = cache.join(format!(".thumb-{}.tmp", Uuid::new_v4()));
-    let file = fs::File::create(&temporary)
-        .map_err(|error| format!("failed to create thumbnail: {error}"))?;
-    let mut writer = BufWriter::new(file);
-    JpegEncoder::new_with_quality(&mut writer, 82)
-        .encode_image(&thumbnail)
-        .map_err(|error| format!("failed to encode thumbnail: {error}"))?;
-    drop(writer);
-    if let Err(error) = fs::rename(&temporary, &target) {
-        let _ = fs::remove_file(&temporary);
-        if !target.is_file() {
-            return Err(format!("failed to activate thumbnail: {error}"));
+    for entry in fs::read_dir(cache)
+        .map_err(|error| format!("failed to inspect legacy gallery cache: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("failed to inspect legacy gallery cache: {error}"))?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if file_type.is_file() && is_owned_legacy_thumbnail(&name) {
+            fs::remove_file(entry.path())
+                .map_err(|error| format!("failed to remove legacy thumbnail {name}: {error}"))?;
         }
     }
-    Ok(target)
+    if fs::read_dir(cache)
+        .map_err(|error| error.to_string())?
+        .next()
+        .is_none()
+    {
+        fs::remove_dir(cache).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn load_catalog(app: &AppHandle, state: &GalleryState) -> Result<Vec<GalleryRecord>, String> {
@@ -235,7 +194,7 @@ fn load_catalog(app: &AppHandle, state: &GalleryState) -> Result<Vec<GalleryReco
     }
     let root = crate::core::gallery_dir(app)?;
     let records = scan_gallery(&root)?;
-    clean_cache(&crate::core::gallery_cache_dir(app)?, &records)?;
+    retire_legacy_thumbnail_cache(&crate::core::gallery_cache_dir(app)?)?;
     *slot = Some(records.clone());
     Ok(records)
 }
@@ -245,15 +204,47 @@ fn invalidate_catalog(state: &GalleryState) -> Result<(), String> {
         .catalog
         .lock()
         .map_err(|_| "gallery catalog is poisoned".to_string())? = None;
+    state
+        .visible_thumbnail_ids
+        .lock()
+        .map_err(|_| "gallery visible thumbnail registry is poisoned".to_string())?
+        .clear();
     Ok(())
 }
 
-#[tauri::command]
+pub(crate) fn visible_thumbnail_path(
+    state: &GalleryState,
+    thumbnail_id: &str,
+) -> Result<Option<PathBuf>, String> {
+    if !state
+        .visible_thumbnail_ids
+        .lock()
+        .map_err(|_| "gallery visible thumbnail registry is poisoned")?
+        .contains(thumbnail_id)
+    {
+        return Ok(None);
+    }
+    let catalog = state
+        .catalog
+        .lock()
+        .map_err(|_| "gallery catalog is poisoned")?;
+    Ok(catalog.as_ref().and_then(|records| {
+        records
+            .iter()
+            .find(|record| record.thumbnail_id == thumbnail_id)
+            .map(|record| record.absolute_path.clone())
+    }))
+}
+
+#[tauri::command(async)]
 pub(crate) fn list_gallery(
     app: AppHandle,
     state: State<'_, GalleryState>,
     input: ListGalleryInput,
 ) -> Result<GalleryPage, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "gallery command lock is poisoned")?;
     crate::core::ensure_gallery_layout(&app)?;
     if input.refresh.unwrap_or(false) {
         invalidate_catalog(&state)?;
@@ -268,45 +259,23 @@ pub(crate) fn list_gallery(
     let page = input.page.max(1).min(total_pages);
     let start = (page - 1) * page_size;
     let end = (start + page_size).min(records.len());
-    let cache = crate::core::gallery_cache_dir(&app)?;
     let page_records = &records[start..end];
-    let worker_count = thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(2)
-        .clamp(1, 4)
-        .min(page_records.len().max(1));
-    let chunk_size = page_records.len().max(1).div_ceil(worker_count);
-    let thumbnail_results = thread::scope(|scope| {
-        let mut workers = Vec::new();
-        for chunk in page_records.chunks(chunk_size) {
-            workers.push(scope.spawn(|| {
-                chunk
-                    .iter()
-                    .map(|record| ensure_thumbnail(record, &cache))
-                    .collect::<Vec<_>>()
-            }));
-        }
-        let mut results = Vec::with_capacity(page_records.len());
-        for worker in workers {
-            results.extend(
-                worker
-                    .join()
-                    .unwrap_or_else(|_| vec![Err("thumbnail worker failed".to_string())]),
-            );
-        }
-        results
-    });
+    *state
+        .visible_thumbnail_ids
+        .lock()
+        .map_err(|_| "gallery visible thumbnail registry is poisoned")? = page_records
+        .iter()
+        .map(|record| record.thumbnail_id.clone())
+        .collect();
     let mut items = Vec::with_capacity(page_records.len());
-    for (record, thumbnail) in page_records.iter().zip(thumbnail_results) {
-        let thumbnail = thumbnail?;
+    for record in page_records {
         items.push(GalleryItem {
             relative_path: record.relative_path.clone(),
             file_name: record.file_name.clone(),
             original_path: normalized_frontend_path(&record.absolute_path),
-            thumbnail_path: normalized_frontend_path(&thumbnail),
+            thumbnail_id: record.thumbnail_id.clone(),
         });
     }
-    clean_cache(&cache, &records)?;
     Ok(GalleryPage {
         gallery_path: normalized_frontend_path(&crate::core::gallery_dir(&app)?),
         items,
@@ -402,12 +371,15 @@ fn collect_directory_images(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(images)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn import_gallery(
     app: AppHandle,
     state: State<'_, GalleryState>,
     input: ImportGalleryInput,
 ) -> Result<ImportGalleryResult, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "gallery command lock is poisoned")?;
     crate::core::ensure_gallery_layout(&app)?;
     invalidate_catalog(&state)?;
     let gallery = crate::core::gallery_dir(&app)?
@@ -490,12 +462,10 @@ mod tests {
     }
 
     #[test]
-    fn scans_images_and_removes_orphaned_thumbnails() {
+    fn scans_images_without_creating_a_private_thumbnail() {
         let root = std::env::temp_dir().join(format!("myvault-gallery-{}", Uuid::new_v4()));
         let gallery = root.join("Gallery");
-        let cache = root.join("Cache");
         fs::create_dir_all(&gallery).unwrap();
-        fs::create_dir_all(&cache).unwrap();
         image::RgbImage::from_pixel(32, 24, image::Rgb([80, 120, 180]))
             .save(gallery.join("sample.png"))
             .unwrap();
@@ -503,13 +473,34 @@ mod tests {
 
         let records = scan_gallery(&gallery).unwrap();
         assert_eq!(records.len(), 1);
-        let thumbnail = ensure_thumbnail(&records[0], &cache).unwrap();
-        assert!(thumbnail.is_file());
+        assert_eq!(records[0].thumbnail_id.len(), 16);
+        assert!(records[0]
+            .thumbnail_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
         assert!(!gallery.join("_Gallery.json").exists());
+        assert_eq!(fs::read_dir(&gallery).unwrap().count(), 2);
 
-        fs::remove_file(gallery.join("sample.png")).unwrap();
-        clean_cache(&cache, &[]).unwrap();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn retires_only_owned_legacy_thumbnail_files() {
+        let root = std::env::temp_dir().join(format!("myvault-gallery-{}", Uuid::new_v4()));
+        let cache = root.join("Cache");
+        fs::create_dir_all(&cache).unwrap();
+        let thumbnail = cache.join("0123456789abcdef.jpg");
+        let temporary = cache.join(".thumb-0123456789abcdef.tmp");
+        let unknown = cache.join("keep.txt");
+        fs::write(&thumbnail, b"old thumbnail").unwrap();
+        fs::write(&temporary, b"old temporary thumbnail").unwrap();
+        fs::write(&unknown, b"not owned by the thumbnail generator").unwrap();
+
+        retire_legacy_thumbnail_cache(&cache).unwrap();
+
         assert!(!thumbnail.exists());
+        assert!(!temporary.exists());
+        assert!(unknown.exists());
         let _ = fs::remove_dir_all(root);
     }
 }

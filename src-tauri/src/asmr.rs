@@ -11,6 +11,9 @@ use std::{
 };
 use tauri::AppHandle;
 
+// WebView commands run off the UI thread. Keep index read/modify/write ordered.
+static COMMAND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AsmrIndex {
@@ -1338,8 +1341,11 @@ fn scan_asmr_import_source(source: &Path) -> Result<AsmrImportStats, String> {
     Ok(stats)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn bootstrap_asmr(app: AppHandle) -> Result<AsmrBootstrapPayload, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let index = load_asmr_index(&app)?;
     Ok(AsmrBootstrapPayload {
@@ -1353,11 +1359,14 @@ pub(crate) fn bootstrap_asmr(app: AppHandle) -> Result<AsmrBootstrapPayload, Str
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn preview_asmr_import(
     app: AppHandle,
     input: PreviewAsmrImportInput,
 ) -> Result<AsmrImportPreview, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let source = PathBuf::from(input.source_path);
     if !source.is_dir() {
@@ -1402,11 +1411,14 @@ fn asmr_payload_from_index(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn import_asmr_work(
     app: AppHandle,
     input: ImportAsmrWorkInput,
 ) -> Result<ImportAsmrWorkResult, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let source = PathBuf::from(input.source_path);
     if !source.is_dir() {
@@ -1618,11 +1630,14 @@ pub(crate) fn import_asmr_work(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn update_asmr_work(
     app: AppHandle,
     input: UpdateAsmrWorkInput,
 ) -> Result<AsmrWork, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let mut index = load_asmr_index(&app)?;
@@ -1647,11 +1662,14 @@ pub(crate) fn update_asmr_work(
     hydrate_work(&app, &updated)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn upsert_asmr_dictionary(
     app: AppHandle,
     input: UpsertAsmrDictionaryInput,
 ) -> Result<AsmrBootstrapPayload, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let value = input.value.trim().to_string();
     if value.is_empty() {
@@ -1680,11 +1698,14 @@ pub(crate) fn upsert_asmr_dictionary(
     asmr_payload_from_index(&app, load_asmr_index(&app)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn delete_asmr_dictionary(
     app: AppHandle,
     input: DeleteAsmrDictionaryInput,
 ) -> Result<AsmrBootstrapPayload, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let value = input.value.trim().to_string();
     if value.is_empty() {
@@ -1703,11 +1724,14 @@ pub(crate) fn delete_asmr_dictionary(
     asmr_payload_from_index(&app, load_asmr_index(&app)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn list_asmr_folder(
     app: AppHandle,
     input: ListAsmrFolderInput,
 ) -> Result<AsmrFolderPayload, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let folder_path = validate_relative_path(&input.folder_path)?;
@@ -1800,11 +1824,14 @@ pub(crate) fn list_asmr_folder(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn update_asmr_playback(
     app: AppHandle,
     input: UpdateAsmrPlaybackInput,
 ) -> Result<AsmrWork, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let audio_path = validate_relative_path(&input.audio_path)?;
@@ -1822,8 +1849,11 @@ pub(crate) fn update_asmr_playback(
     hydrate_work(&app, &updated)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result<AsmrWork, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let relative_path = validate_relative_path(&input.relative_path)?;
@@ -1864,11 +1894,14 @@ pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result
     hydrate_work(&app, &updated)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub(crate) fn read_asmr_text_file(
     app: AppHandle,
     input: ReadAsmrTextFileInput,
 ) -> Result<String, String> {
+    let _command = COMMAND_LOCK
+        .lock()
+        .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let relative_path = validate_relative_path(&input.relative_path)?;

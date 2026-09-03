@@ -21,6 +21,7 @@ import { resolveMessages } from "./i18n";
 import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, ResourceUsage, WorkspacePayload } from "./types";
 import { appUiSpec } from "./ui-spec";
 import { noteSignature, previewText } from "./utils";
+import { useEmbeddedModules } from "./useEmbeddedModules";
 import "./styles/global.css";
 import "./styles/notes.css";
 import "./styles/player.css";
@@ -30,6 +31,9 @@ function normalizeFolderInput(folderPath: string) {
 }
 
 function App() {
+  const embedded = useEmbeddedModules();
+  const selectEmbeddedRef = useRef(embedded.select);
+  selectEmbeddedRef.current = embedded.select;
   const [settings, setSettings] = useState<AppSettings>({
     language: "zh-CN",
     showNoteTime: false,
@@ -157,7 +161,11 @@ function App() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen("player:replace-queue", () => {
-      if (!disposed) setPlayerOpen(true);
+      if (!disposed) {
+        void selectEmbeddedRef.current(null).then((switched) => {
+          if (!disposed && switched) setPlayerOpen(true);
+        });
+      }
     }).then((cleanup) => {
       if (disposed) cleanup();
       else unlisten = cleanup;
@@ -557,6 +565,7 @@ function App() {
   }
 
   async function handleUpdateAction() {
+    if (embedded.experiment) return;
     if (updateBusy) return;
 
     if (availableUpdate) {
@@ -675,7 +684,7 @@ function App() {
   }, [notesBooting, selectedNoteId]);
 
   useEffect(() => {
-    if (!settingsOpen && !settings.showMemoryInTitlebar) return;
+    if (!settingsOpen && !settings.showMemoryInTitlebar && !embedded.experiment) return;
     let alive = true;
     let timer: number | undefined;
     const refresh = async () => {
@@ -693,7 +702,7 @@ function App() {
       alive = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [settingsOpen, settings.showMemoryInTitlebar]);
+  }, [settingsOpen, settings.showMemoryInTitlebar, embedded.experiment]);
 
   useEffect(() => {
     const theme = appUiSpec.theme;
@@ -742,7 +751,7 @@ function App() {
 
   const notesBodyContent = (
     <div
-      className={`module-body notes-module-body workspace-view ${playerOpen ? "is-hidden" : "is-active"}`}
+      className={`module-body notes-module-body workspace-view ${playerOpen || embedded.active ? "is-hidden" : "is-active"}`}
       style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}
       onKeyDown={handleEditorKeyDown}
     >
@@ -892,11 +901,14 @@ function App() {
       <ShellFrame
         spec={appUiSpec}
         messages={messages}
-        activeModule={playerOpen ? "player" : "notes"}
+        activeModule={embedded.active ?? (playerOpen ? "player" : "notes")}
+        modulesDisabled={embedded.busy || embedded.experiment === null}
+        experimental={embedded.experiment === true}
         bodyContent={
           <>
             {notesBodyContent}
-            <PlayerWorkspace active={playerOpen} onBack={() => setPlayerOpen(false)} />
+            <PlayerWorkspace active={playerOpen && !embedded.active} onBack={() => setPlayerOpen(false)} />
+            {embedded.active && <div className="embedded-placeholder">正在加载独立 WebView…</div>}
           </>
         }
         settingsPanel={
@@ -904,9 +916,9 @@ function App() {
             open={settingsOpen}
             messages={messages}
             version={appVersion}
-            updateStatus={updateStatus}
+            updateStatus={embedded.experiment ? "单窗口实验版：独立测试数据，正式更新已禁用" : updateStatus}
             updateActionLabel={availableUpdate ? messages.updateInstallButton : messages.updateCheckButton}
-            updateActionDisabled={updateBusy}
+            updateActionDisabled={updateBusy || embedded.experiment === true}
             language={settings.language}
             showNoteTime={settings.showNoteTime}
             showMemoryInTitlebar={settings.showMemoryInTitlebar}
@@ -940,26 +952,17 @@ function App() {
             onClose={() => setSettingsOpen(false)}
           />
         }
-        showMemory={settings.showMemoryInTitlebar}
+        showMemory={settings.showMemoryInTitlebar || embedded.experiment === true}
         memoryBytes={resourceUsage?.totalMemoryBytes ?? null}
         processCount={resourceUsage?.totalProcesses ?? null}
         onSelectModule={(moduleId) => {
-          if (settingsOpen) setSettingsOpen(false);
-          if (moduleId === "notes") {
-            setPlayerOpen(false);
-          } else if (moduleId === "asmr") {
-            void invoke("launch_asmr_module").catch((error) => {
-              const message = error instanceof Error ? error.message : String(error);
-              window.alert(`DL_ASMR module failed to start: ${message}`);
+          if (!["notes", "player", "asmr", "gallery"].includes(moduleId)) return;
+          void embedded.select(moduleId === "asmr" || moduleId === "gallery" ? moduleId : null)
+            .then((switched) => {
+              if (!switched) return;
+              setSettingsOpen(false);
+              setPlayerOpen(moduleId === "player");
             });
-          } else if (moduleId === "gallery") {
-            void invoke("launch_gallery_module").catch((error) => {
-              const message = error instanceof Error ? error.message : String(error);
-              window.alert(`图库模块启动失败：${message}`);
-            });
-          } else if (moduleId === "player") {
-            setPlayerOpen(true);
-          }
         }}
         onOpenSettings={() => setSettingsOpen((current) => !current)}
       />

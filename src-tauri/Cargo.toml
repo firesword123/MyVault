@@ -12,12 +12,8 @@ name = "myvault"
 path = "src/main.rs"
 
 [[bin]]
-name = "myvault-dl-asmr"
-path = "src/bin/myvault-asmr.rs"
-
-[[bin]]
-name = "myvault-gallery"
-path = "src/bin/myvault-gallery.rs"
+name = "myvault-webviews"
+path = "src/bin/myvault-webviews.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -32,7 +28,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-ico"] }
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-ico", "unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
@@ -44,11 +40,12 @@ sysinfo = "0.30"
 uuid = { version = "1", features = ["v4"] }
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Storage_FileSystem",
-  "Win32_System_IO",
-  "Win32_System_JobObjects",
-  "Win32_System_Pipes",
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",
+] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
 ] }

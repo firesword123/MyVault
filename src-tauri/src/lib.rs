@@ -1,8 +1,10 @@
+mod asmr;
 mod core;
-mod module_launcher;
-mod module_protocol;
+mod embedded_modules;
+mod gallery;
 mod notes;
 mod player;
+mod shell_thumbnail;
 mod storage;
 
 use crate::core::{
@@ -30,9 +32,8 @@ fn hide_window_to_tray(window: &Window) -> Result<(), String> {
 }
 
 fn show_main_window(app: &AppHandle) -> Result<(), String> {
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window not found".to_string())?;
+    let window = app.get_window("main");
+    let window = window.ok_or_else(|| "main window not found".to_string())?;
     window
         .show()
         .map_err(|error| format!("failed to show window: {error}"))?;
@@ -140,23 +141,86 @@ fn start_window_dragging(window: Window) -> Result<(), String> {
         .map_err(|error| format!("failed to start dragging: {error}"))
 }
 
+struct ExperimentMode(bool);
+
+#[tauri::command]
+fn get_module_host_mode() -> bool {
+    true
+}
+
+#[tauri::command]
+fn is_experiment_build(mode: tauri::State<'_, ExperimentMode>) -> bool {
+    mode.0
+}
+
 pub fn run() {
-    let app = tauri::Builder::default()
+    run_app(false);
+}
+
+pub fn run_single_window() {
+    core::set_data_root_override(embedded_modules::experiment_root().join("MyVaultData"))
+        .expect("failed to isolate experiment data");
+    run_app(true);
+}
+
+fn run_app(experiment: bool) {
+    let mut context = tauri::generate_context!();
+    {
+        let config = context.config_mut();
+        // WindowConfig only accepts relative data directories. Create the shell
+        // explicitly in setup so each WebView can use an absolute, separate UDF.
+        config.app.windows[0].create = false;
+        if experiment {
+            config.identifier = "com.facial.myvault.webviews-test".into();
+            config.app.windows[0].title = "MyVault · Single-window WebView Test".into();
+            if std::env::var_os("MYVAULT_WEBVIEW_TEST_DEBUG").is_some() {
+                config.app.windows[0].additional_browser_args =
+                    Some("--remote-debugging-port=9330".into());
+            }
+        }
+    }
+    let app_builder = tauri::Builder::default()
+        .manage(ExperimentMode(experiment))
+        .register_asynchronous_uri_scheme_protocol(
+            "myvault-thumbnail",
+            shell_thumbnail::handle_protocol,
+        )
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_process::init())
-        .plugin(
+        .plugin(tauri_plugin_opener::init());
+    // This test executable must never install the production updater.
+    let app_builder = if experiment {
+        app_builder
+    } else {
+        app_builder.plugin(tauri_plugin_process::init()).plugin(
             tauri_plugin_updater::Builder::new()
                 .pubkey(include_str!("../../updater.key.pub").trim())
                 .build(),
         )
-        .setup(|app| {
+    };
+    let app = app_builder
+        .setup(move |app| {
             ensure_vault_layout(app.handle())
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-            let module_manager = module_launcher::ModuleManager::new()
-                .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
-            app.manage(module_manager);
             app.manage(player::PlayerState::default());
+            {
+                let webview_root = if experiment {
+                    embedded_modules::experiment_root().join("WebViews")
+                } else {
+                    app.path().app_local_data_dir()?.join("WebViews")
+                };
+                std::fs::create_dir_all(&webview_root)?;
+                let lifecycle_log =
+                    experiment.then(|| embedded_modules::experiment_root().join("webviews.log"));
+                app.manage(embedded_modules::EmbeddedModules::new(
+                    webview_root.clone(),
+                    lifecycle_log,
+                ));
+                app.manage(gallery::GalleryState::default());
+                let window_config = app.config().app.windows[0].clone();
+                tauri::WebviewWindowBuilder::from_config(app, &window_config)?
+                    .data_directory(webview_root.join("shell"))
+                    .build()?;
+            }
             let settings = load_settings(app.handle())
                 .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
             apply_network_settings(&settings);
@@ -171,13 +235,30 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            get_module_host_mode,
+            is_experiment_build,
+            embedded_modules::switch_embedded_module,
+            embedded_modules::resize_embedded_module,
+            embedded_modules::set_embedded_module_guard,
+            embedded_modules::embedded_module_status,
+            embedded_modules::request_main_playback,
+            asmr::bootstrap_asmr,
+            asmr::preview_asmr_import,
+            asmr::import_asmr_work,
+            asmr::update_asmr_work,
+            asmr::upsert_asmr_dictionary,
+            asmr::delete_asmr_dictionary,
+            asmr::list_asmr_folder,
+            asmr::update_asmr_playback,
+            asmr::set_asmr_cover,
+            asmr::read_asmr_text_file,
+            gallery::list_gallery,
+            gallery::import_gallery,
             notes::bootstrap_app,
             core::get_settings,
             core::get_resource_usage,
             core::update_settings,
             notes::update_notes_state,
-            module_launcher::launch_asmr_module,
-            module_launcher::launch_gallery_module,
             player::bootstrap_player,
             player::clear_player_queue,
             player::read_player_subtitle,
@@ -201,14 +282,8 @@ pub fn run() {
             close_window,
             start_window_dragging
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if matches!(event, RunEvent::Exit) {
-            if let Some(manager) = app_handle.try_state::<module_launcher::ModuleManager>() {
-                manager.shutdown_all();
-            }
-        }
-    });
+    app.run(|_, _: RunEvent| {});
 }

@@ -6,12 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "prepare:asmr": "powershell -ExecutionPolicy Bypass -File scripts/build-asmr-sidecar.ps1",
     "asmr:agent": "powershell -ExecutionPolicy Bypass -File src-tauri/asmr/agent.ps1",
-    "prepare:gallery": "powershell -ExecutionPolicy Bypass -File scripts/build-gallery-sidecar.ps1",
-    "prepare:modules": "npm run prepare:asmr && npm run prepare:gallery",
-    "tauri:before-dev": "npm run prepare:modules && npm run dev",
-    "tauri:before-build": "npm run build && npm run prepare:asmr -- -Release && npm run prepare:gallery -- -Release",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:build:update": "powershell -ExecutionPolicy Bypass -File scripts/build-updater-release.ps1",

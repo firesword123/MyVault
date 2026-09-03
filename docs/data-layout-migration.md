@@ -6,7 +6,6 @@
 Portable root/
 ├─ myvault/
 │  ├─ myvault.exe
-│  ├─ myvault-dl-asmr.exe
 │  └─ myvault.data-route.json       # optional path override only
 └─ MyVaultData/
    ├─ Notes/
@@ -20,6 +19,7 @@ Portable root/
    │     ├─ _Work.json
    │     └─ <imported files and folders>/
    ├─ Attachments/
+   ├─ Gallery/
    └─ _MyVault/
       ├─ Manifest.json
       ├─ Settings.json
@@ -29,7 +29,7 @@ Portable root/
       └─ MigrationReports/
 ```
 
-All paths persisted in `_Library.json` are relative to `MyVaultData`. A DL_ASMR `coverPath` points directly to an existing image inside its RJ work directory; MyVault does not create a cover copy or thumbnail. Absolute media paths are created only in command responses while the application is running.
+All paths persisted in `_Library.json` are relative to `MyVaultData`. A DL_ASMR `coverPath` points directly to an existing image inside its RJ work directory; MyVault does not create a cover copy or thumbnail. Gallery also keeps only original user files: its grid uses the Windows Shell thumbnail cache and does not create `_MyVault/Cache/Gallery` derivatives. Absolute media paths are created only in command responses while the application is running.
 
 `myvault.data-route.json` contains no application state:
 

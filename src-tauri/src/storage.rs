@@ -100,7 +100,6 @@ pub(crate) fn data_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-#[allow(dead_code)] // Used by independently compiled sidecar binaries.
 pub(crate) fn set_data_root_override(path: PathBuf) -> Result<(), String> {
     if !path.is_absolute() {
         return Err("data root must be absolute".to_string());
@@ -137,7 +136,6 @@ fn create_layout(root: &Path) -> Result<(), String> {
         "DL_ASMR",
         "Gallery",
         "Attachments",
-        "_MyVault/Cache/Gallery",
         "_MyVault/Importing",
         "_MyVault/Backups",
         "_MyVault/Migrations",

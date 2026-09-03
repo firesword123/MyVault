@@ -16,6 +16,8 @@ type ShellFrameProps = {
   processCount?: number | null;
   onMinimize?: () => void;
   onClose?: () => void;
+  modulesDisabled?: boolean;
+  experimental?: boolean;
 };
 
 export function ShellFrame({
@@ -31,13 +33,15 @@ export function ShellFrame({
   processCount,
   onMinimize,
   onClose,
+  modulesDisabled,
+  experimental,
 }: ShellFrameProps) {
   return (
     <div className="window-shell">
       <TitleBar
-        brand={messages.brand}
+        brand={experimental ? `${messages.brand} · 实验版` : messages.brand}
         messages={messages}
-        modules={spec.modules}
+        modules={modulesDisabled ? spec.modules.map((module) => ({ ...module, enabled: false })) : spec.modules}
         activeModule={activeModule}
         onSelectModule={onSelectModule}
         onOpenSettings={onOpenSettings}

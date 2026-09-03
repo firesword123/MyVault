@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEmbeddedGuard } from "../useEmbeddedGuard";
 import {
   Building2,
   Check,
@@ -135,6 +136,7 @@ export function AsmrWorkspace() {
   const [structuredMetadataText, setStructuredMetadataText] = useState("");
   const [structuredMetadataMode, setStructuredMetadataMode] = useState<StructuredMetadataMode>("skip");
   const [structuredMetadataStatus, setStructuredMetadataStatus] = useState("");
+  useEmbeddedGuard(busy ? "DL_ASMR 正在导入，请完成后再切换" : metadataDraft ? "请先保存或取消元数据编辑，再切换模块" : null);
 
   const selectedWork = works.find((work) => work.rjId === selectedWorkId) ?? works[0] ?? null;
   const audioItems = folderItems.filter((item) => item.kind === "audio");
@@ -678,7 +680,6 @@ export function AsmrWorkspace() {
       })),
     };
     try {
-      await invoke("request_main_playback", { request });
       const updated = await invoke<AsmrWork>("update_asmr_playback", {
         input: {
           rjId: selectedWork.rjId,
@@ -687,6 +688,8 @@ export function AsmrWorkspace() {
         },
       });
       setWorks((current) => current.map((work) => (work.rjId === updated.rjId ? updated : work)));
+      // Queue handoff may immediately destroy this embedded page.
+      await invoke("request_main_playback", { request });
     } catch (error) {
       setErrorMessage(`无法交给主程序播放：${error instanceof Error ? error.message : String(error)}`);
     }

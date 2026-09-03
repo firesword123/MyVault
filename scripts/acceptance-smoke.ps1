@@ -17,12 +17,6 @@ function Invoke-Checked {
 Write-Host "[smoke] frontend build"
 Invoke-Checked { npm run build } "Frontend build"
 
-Write-Host "[smoke] DL_ASMR sidecar build"
-Invoke-Checked { npm run prepare:asmr } "DL_ASMR sidecar build"
-
-Write-Host "[smoke] Gallery sidecar build"
-Invoke-Checked { npm run prepare:gallery } "Gallery sidecar build"
-
 Write-Host "[smoke] backend tests"
 Invoke-Checked { cargo test --manifest-path src-tauri/Cargo.toml } "Backend tests"
 
