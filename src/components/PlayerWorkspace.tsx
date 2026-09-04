@@ -1,19 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  ArrowLeft,
-  ListMusic,
-  LocateFixed,
-  Music2,
-  Pause,
-  Play,
-  RotateCcw,
-  RotateCw,
-  SkipBack,
-  SkipForward,
-  Trash2,
-  Volume2,
-} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PlayerQueueRequest } from "../types";
 
@@ -30,9 +16,11 @@ type SubtitleLine = {
 
 function formatDuration(seconds: number) {
   if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
-  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
   const rest = Math.floor(seconds % 60);
-  return `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  const clock = `${String(minutes).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  return hours > 0 ? `${String(hours).padStart(2, "0")}:${clock}` : clock;
 }
 
 function parseSubtitleTime(value: string) {
@@ -105,6 +93,9 @@ export function PlayerWorkspace({ active, onBack }: PlayerWorkspaceProps) {
   const [autoScroll, setAutoScroll] = useState(true);
   const [errorMessage, setErrorMessage] = useState("");
   const currentTrack = queue[currentIndex] ?? null;
+  const progressPercent = currentTrack && duration > 0
+    ? Math.min(100, Math.max(0, position / duration * 100))
+    : 0;
 
   const activeSubtitleIndex = useMemo(
     () => subtitles.reduce((last, line, index) => (position >= line.start ? index : last), -1),
@@ -267,68 +258,85 @@ export function PlayerWorkspace({ active, onBack }: PlayerWorkspaceProps) {
 
   return (
     <div className={`module-body player-workspace ${active ? "is-active" : "is-hidden"}`}>
-      <aside className="player-workspace-sidebar">
-        <button type="button" className="player-back-button" onClick={onBack}>
-          <ArrowLeft size={17} strokeWidth={1.8} />
-          <span>返回笔记</span>
+      <aside className="player-sidebar">
+        <button type="button" className="btn-back" onClick={onBack}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <line x1="19" y1="12" x2="5" y2="12" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+          返回笔记
         </button>
-        <div className="player-playlist-header">
-          <div>
-            <span className="section-label">播放器</span>
-            <h1>播放列表</h1>
-          </div>
-          <button type="button" className="player-clear-button" onClick={stopAndClear} disabled={!queue.length} title="清空播放列表">
-            <Trash2 size={17} strokeWidth={1.8} />
+        <div className="pl-head">
+          <span className="pl-title">播放列表</span>
+          <button type="button" className="icon-btn pl-clear" onClick={stopAndClear} disabled={!queue.length} title="清空列表">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M3 6h18" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+              <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            </svg>
           </button>
         </div>
-        <nav className="player-playlist">
+        <nav className={`playlist nice-scroll ${queue.length ? "" : "empty"}`}>
           {queue.length ? queue.map((track, index) => (
             <button
               key={track.id}
               type="button"
-              className={`player-playlist-item ${index === currentIndex ? "is-active" : ""}`}
+              className={`pl-item ${index === currentIndex ? "active" : ""}`}
               onClick={() => playAt(index)}
             >
-              <span className="player-track-index">{String(index + 1).padStart(2, "0")}</span>
-              <span className="player-track-copy">
-                <strong>{track.title}</strong>
-                <small>{track.workTitle || track.workId}</small>
+              <span className="pl-idx">{String(index + 1).padStart(2, "0")}</span>
+              <span className="pl-text">
+                <span className="pl-name">{track.title}</span>
+                <span className="pl-sub">{track.workTitle || track.workId}</span>
               </span>
-              {index === currentIndex && isPlaying ? <Music2 size={16} strokeWidth={1.8} /> : null}
             </button>
           )) : (
-            <div className="player-playlist-empty">
-              <ListMusic size={27} strokeWidth={1.5} />
-              <strong>播放列表为空</strong>
-              <span>从音声作品浏览器选择音频</span>
+            <div className="pl-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="8" y1="6" x2="21" y2="6" />
+                <line x1="8" y1="12" x2="21" y2="12" />
+                <line x1="8" y1="18" x2="16" y2="18" />
+                <path d="M3 6h.01M3 12h.01M3 18h.01" strokeWidth="2.4" />
+              </svg>
+              <h3>播放列表为空</h3>
+              <p>从音声作品浏览器选择音频</p>
             </div>
           )}
         </nav>
       </aside>
 
-      <main className="player-workspace-content">
-        <header className="player-content-header">
-          <div>
-            <span className="section-label">正在播放 · {currentTrack?.workId ?? "未选择"}</span>
-            <h2>{currentTrack?.title ?? "选择一首音频开始播放"}</h2>
-            <p>{currentTrack?.workTitle ?? "字幕将在这里与播放进度同步显示"}</p>
+      <main className="player-content">
+        <header className="now-head">
+          <div className="nh-left">
+            <div className="nh-flag">正在播放 · <span>{currentTrack?.workId ?? "未选择"}</span></div>
+            <div className="nh-title">{currentTrack?.title ?? "选择一首音频开始播放"}</div>
+            <div className="nh-sub">
+              {currentTrack
+                ? subtitles.length
+                  ? `共 ${subtitles.length} 条字幕`
+                  : "该曲目暂无字幕"
+                : "字幕将在这里与播放进度同步显示"}
+            </div>
           </div>
           <button
             type="button"
-            className="player-locate-button"
+            className="btn-cue"
             disabled={activeSubtitleIndex < 0}
             onClick={() => {
               setAutoScroll(true);
               window.requestAnimationFrame(() => activeSubtitleRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }));
             }}
           >
-            <LocateFixed size={18} strokeWidth={1.8} />
-            <span>当前字幕</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <circle cx="12" cy="12" r="7" />
+              <circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none" />
+            </svg>
+            当前字幕
           </button>
         </header>
 
         <section
-          className="player-subtitle-stage"
+          className="sub-panel nice-scroll"
           onWheel={() => setAutoScroll(false)}
           onPointerDown={() => setAutoScroll(false)}
         >
@@ -337,49 +345,84 @@ export function PlayerWorkspace({ active, onBack }: PlayerWorkspaceProps) {
               key={`${line.start}-${index}`}
               ref={index === activeSubtitleIndex ? activeSubtitleRef : null}
               type="button"
-              className={`player-subtitle-line ${index === activeSubtitleIndex ? "is-active" : ""}`}
+              className={`cue-row ${index === activeSubtitleIndex ? "active" : ""}`}
               onClick={() => seekTo(line.start)}
             >
-              <span>{formatDuration(line.start)}</span>
-              <strong>{line.text}</strong>
+              <span className="cue-time">{formatDuration(line.start)}</span>
+              <span className="cue-text">{line.text}</span>
             </button>
           )) : (
-            <div className="player-subtitle-empty">
-              <Music2 size={32} strokeWidth={1.35} />
-              <strong>{currentTrack ? "当前音频没有可显示的字幕" : "等待播放"}</strong>
-              <span>{subtitleError ? `字幕读取失败：${subtitleError}` : "支持 VTT、SRT、LRC、ASS 与 SSA"}</span>
+            <div className="sub-empty">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                <path d="M8 15s-1.5 2-1.5 3.5A1.5 1.5 0 0 0 8 20a1.5 1.5 0 0 0 1.5-1.5c0-1.5-1.5-3.5-1.5-3.5" />
+                <path d="M9 9a3 3 0 1 0 3-3" />
+                <path d="M3 15h6" />
+                <path d="M15 9v10" />
+              </svg>
+              <h3>{currentTrack ? "该曲目暂无字幕" : "等待播放"}</h3>
+              <p>{subtitleError ? `字幕读取失败：${subtitleError}` : "支持 VTT、SRT、LRC、ASS 与 SSA"}</p>
             </div>
           )}
         </section>
 
-        <footer className="player-control-deck">
-          <div className="player-progress-row">
+        <footer className={`transport ${currentTrack ? "" : "ctrl-disabled"}`}>
+          <div className="t-row1">
             <span>{formatDuration(position)}</span>
-            <input
-              type="range"
-              min={0}
-              max={duration || 0}
-              step={0.1}
-              value={Math.min(position, duration || position)}
-              disabled={!currentTrack}
-              onChange={(event) => seekTo(Number(event.target.value))}
-            />
+            <div className="seek">
+              <div className="seek-track">
+                <div className="seek-fill" style={{ ["--pos" as string]: `${progressPercent}%` }} />
+                <div className="seek-thumb" style={{ left: `${progressPercent}%` }} />
+              </div>
+              <input
+                className="seek-input"
+                aria-label="播放进度"
+                type="range"
+                min={0}
+                max={duration || 0}
+                step={0.1}
+                value={Math.min(position, duration || position)}
+                disabled={!currentTrack}
+                onChange={(event) => seekTo(Number(event.target.value))}
+              />
+            </div>
             <span>{formatDuration(duration)}</span>
           </div>
-          <div className="player-control-row">
-            <div className="player-transport-controls">
-              <button type="button" onClick={() => playAt(currentIndex - 1)} disabled={currentIndex <= 0} title="上一首"><SkipBack size={20} /></button>
-              <button type="button" onClick={() => seekTo(position - 5)} disabled={!currentTrack} title="快退 5 秒"><RotateCcw size={19} /><small>5</small></button>
-              <button type="button" className="is-primary" onClick={togglePlayback} disabled={!currentTrack} title="播放或暂停">
-                {isPlaying ? <Pause size={23} /> : <Play size={25} fill="currentColor" />}
+          <div className="t-row2">
+            <div className="t-ctr">
+              <button type="button" className="tc-btn" onClick={() => playAt(currentIndex - 1)} disabled={currentIndex <= 0} title="上一首">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 20 L9 12 L19 4 Z" /><rect x="5" y="4" width="2.4" height="16" rx="1" /></svg>
               </button>
-              <button type="button" onClick={() => seekTo(position + 30)} disabled={!currentTrack} title="快进 30 秒"><RotateCw size={19} /><small>30</small></button>
-              <button type="button" onClick={() => playAt(currentIndex + 1)} disabled={!queue.length || currentIndex >= queue.length - 1} title="下一首"><SkipForward size={20} /></button>
+              <button type="button" className="tc-btn" onClick={() => seekTo(position - 5)} disabled={!currentTrack} title="后退 5 秒">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+                <span className="tc-num">5</span>
+              </button>
+              <button type="button" className={`tc-btn tc-main ${isPlaying ? "playing" : ""}`} onClick={togglePlayback} disabled={!currentTrack} title="播放 / 暂停">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path className="play-ic" d="M8 5.5 L19 12 L8 18.5 Z" />
+                  <g className="pause-ic"><rect x="7" y="5.5" width="3.4" height="13" rx="1" /><rect x="13.6" y="5.5" width="3.4" height="13" rx="1" /></g>
+                </svg>
+              </button>
+              <button type="button" className="tc-btn" onClick={() => seekTo(position + 30)} disabled={!currentTrack} title="前进 30 秒">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7l3 2.7" /><path d="M21 3v5h-5" /></svg>
+                <span className="tc-num">30</span>
+              </button>
+              <button type="button" className="tc-btn" onClick={() => playAt(currentIndex + 1)} disabled={!queue.length || currentIndex >= queue.length - 1} title="下一首">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 4 L15 12 L5 20 Z" /><rect x="16.6" y="4" width="2.4" height="16" rx="1" /></svg>
+              </button>
             </div>
-            <label className="player-volume-control">
-              <Volume2 size={17} strokeWidth={1.8} />
-              <input type="range" min={0} max={1} step={0.01} value={volume} onChange={(event) => setVolume(Number(event.target.value))} />
-              <span>{Math.round(volume * 100)}%</span>
+            <label className="vol-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11 5 6 9 H2 v6 h4 l5 4 z" /><path d="M15.5 8.8a5 5 0 0 1 0 6.4" /></svg>
+              <input
+                type="range"
+                className="vol"
+                min={0}
+                max={1}
+                step={0.01}
+                value={volume}
+                style={{ ["--v" as string]: `${Math.round(volume * 100)}%` }}
+                onChange={(event) => setVolume(Number(event.target.value))}
+              />
+              <span className="vol-pct">{Math.round(volume * 100)}%</span>
             </label>
           </div>
           {errorMessage ? <p className="player-error">播放失败：{errorMessage}</p> : null}

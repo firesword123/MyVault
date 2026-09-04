@@ -1,4 +1,4 @@
-use image::ImageReader;
+use image::{metadata::Orientation, ImageDecoder, ImageReader};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map::DefaultHasher, HashSet},
@@ -11,8 +11,12 @@ use std::{
 use tauri::{AppHandle, State};
 use uuid::Uuid;
 
-const DEFAULT_PAGE_SIZE: usize = 48;
-const MAX_PAGE_SIZE: usize = 96;
+const DEFAULT_VIEWPORT_WIDTH: f64 = 900.0;
+const DEFAULT_VIEWPORT_HEIGHT: f64 = 520.0;
+const DEFAULT_TARGET_WIDTH: f64 = 192.0;
+const MASONRY_GAP: f64 = 16.0;
+const CARD_TEXT_HEIGHT: f64 = 40.0;
+const MAX_VISIBLE_ITEMS: usize = 96;
 static COMMAND_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn release_catalog(state: &GalleryState) -> Result<(), String> {
@@ -28,6 +32,8 @@ struct GalleryRecord {
     relative_path: String,
     file_name: String,
     thumbnail_id: String,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Default)]
@@ -40,7 +46,10 @@ pub(crate) struct GalleryState {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListGalleryInput {
     page: usize,
-    page_size: usize,
+    viewport_width: Option<f64>,
+    viewport_height: Option<f64>,
+    target_width: Option<f64>,
+    anchor_relative_path: Option<String>,
     refresh: Option<bool>,
 }
 
@@ -57,6 +66,8 @@ pub(crate) struct GalleryItem {
     file_name: String,
     original_path: String,
     thumbnail_id: String,
+    width: u32,
+    height: u32,
 }
 
 #[derive(Serialize)]
@@ -66,8 +77,9 @@ pub(crate) struct GalleryPage {
     items: Vec<GalleryItem>,
     total_items: usize,
     page: usize,
-    page_size: usize,
     total_pages: usize,
+    column_count: usize,
+    column_width: f64,
 }
 
 #[derive(Serialize)]
@@ -84,12 +96,25 @@ fn normalized_frontend_path(path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn is_supported_image(path: &Path) -> bool {
-    ImageReader::open(path)
+fn image_display_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let reader = ImageReader::open(path)
         .and_then(|reader| reader.with_guessed_format())
-        .ok()
-        .and_then(|reader| reader.format())
-        .is_some()
+        .ok()?;
+    let mut decoder = reader.into_decoder().ok()?;
+    let (mut width, mut height) = decoder.dimensions();
+    if width == 0 || height == 0 {
+        return None;
+    }
+    if matches!(
+        decoder.orientation().unwrap_or(Orientation::NoTransforms),
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    ) {
+        std::mem::swap(&mut width, &mut height);
+    }
+    Some((width, height))
 }
 
 fn thumbnail_id(relative_path: &str, metadata: &fs::Metadata) -> String {
@@ -125,9 +150,12 @@ fn scan_gallery(root: &Path) -> Result<Vec<GalleryRecord>, String> {
                 pending.push(path);
                 continue;
             }
-            if !file_type.is_file() || !is_supported_image(&path) {
+            if !file_type.is_file() {
                 continue;
             }
+            let Some((width, height)) = image_display_dimensions(&path) else {
+                continue;
+            };
             let relative = path
                 .strip_prefix(root)
                 .map_err(|_| "gallery item escaped the gallery root".to_string())?;
@@ -139,6 +167,8 @@ fn scan_gallery(root: &Path) -> Result<Vec<GalleryRecord>, String> {
                 absolute_path: path,
                 file_name: entry.file_name().to_string_lossy().into_owned(),
                 thumbnail_id: thumbnail_id(&relative_path, &metadata),
+                width,
+                height,
                 relative_path,
             });
         }
@@ -212,6 +242,75 @@ fn invalidate_catalog(state: &GalleryState) -> Result<(), String> {
     Ok(())
 }
 
+fn finite_between(value: Option<f64>, fallback: f64, minimum: f64, maximum: f64) -> f64 {
+    value
+        .filter(|value| value.is_finite())
+        .unwrap_or(fallback)
+        .clamp(minimum, maximum)
+}
+
+fn masonry_layout(
+    records: &[GalleryRecord],
+    input: &ListGalleryInput,
+) -> (usize, f64, Vec<(usize, usize)>) {
+    let viewport_width =
+        finite_between(input.viewport_width, DEFAULT_VIEWPORT_WIDTH, 240.0, 8_192.0);
+    let viewport_height = finite_between(
+        input.viewport_height,
+        DEFAULT_VIEWPORT_HEIGHT,
+        180.0,
+        8_192.0,
+    );
+    let target_width = finite_between(input.target_width, DEFAULT_TARGET_WIDTH, 112.0, 320.0);
+    let column_count =
+        (((viewport_width + MASONRY_GAP) / (target_width + MASONRY_GAP)).floor() as usize).max(1);
+    let column_width = (viewport_width - MASONRY_GAP * column_count.saturating_sub(1) as f64)
+        / column_count as f64;
+    if records.is_empty() {
+        return (column_count, column_width, vec![(0, 0)]);
+    }
+
+    let mut pages = Vec::new();
+    let mut start = 0;
+    while start < records.len() {
+        let mut heights = vec![0.0_f64; column_count];
+        let mut end = start;
+        while end < records.len() {
+            if end - start >= MAX_VISIBLE_ITEMS {
+                break;
+            }
+            let shortest = heights
+                .iter()
+                .enumerate()
+                .min_by(|left, right| left.1.total_cmp(right.1))
+                .map(|(index, _)| index)
+                .unwrap_or_default();
+            let record = &records[end];
+            let image_height = column_width * f64::from(record.height) / f64::from(record.width);
+            let item_height = image_height + CARD_TEXT_HEIGHT;
+            let next_height = heights[shortest]
+                + if heights[shortest] > 0.0 {
+                    MASONRY_GAP
+                } else {
+                    0.0
+                }
+                + item_height;
+            let columns_started = heights.iter().all(|height| *height > 0.0);
+            if columns_started && next_height > viewport_height {
+                break;
+            }
+            heights[shortest] = next_height;
+            end += 1;
+        }
+        if end == start {
+            end += 1;
+        }
+        pages.push((start, end));
+        start = end;
+    }
+    (column_count, column_width, pages)
+}
+
 pub(crate) fn visible_thumbnail_path(
     state: &GalleryState,
     thumbnail_id: &str,
@@ -250,15 +349,23 @@ pub(crate) fn list_gallery(
         invalidate_catalog(&state)?;
     }
     let records = load_catalog(&app, &state)?;
-    let page_size = if input.page_size == 0 {
-        DEFAULT_PAGE_SIZE
-    } else {
-        input.page_size.min(MAX_PAGE_SIZE)
-    };
-    let total_pages = records.len().max(1).div_ceil(page_size);
-    let page = input.page.max(1).min(total_pages);
-    let start = (page - 1) * page_size;
-    let end = (start + page_size).min(records.len());
+    let (column_count, column_width, pages) = masonry_layout(&records, &input);
+    let total_pages = pages.len();
+    let mut page = input.page.max(1).min(total_pages);
+    if let Some(anchor) = input.anchor_relative_path.as_deref() {
+        if let Some(index) = records
+            .iter()
+            .position(|record| record.relative_path == anchor)
+        {
+            if let Some(found) = pages
+                .iter()
+                .position(|(start, end)| index >= *start && index < *end)
+            {
+                page = found + 1;
+            }
+        }
+    }
+    let (start, end) = pages[page - 1];
     let page_records = &records[start..end];
     *state
         .visible_thumbnail_ids
@@ -274,6 +381,8 @@ pub(crate) fn list_gallery(
             file_name: record.file_name.clone(),
             original_path: normalized_frontend_path(&record.absolute_path),
             thumbnail_id: record.thumbnail_id.clone(),
+            width: record.width,
+            height: record.height,
         });
     }
     Ok(GalleryPage {
@@ -281,8 +390,9 @@ pub(crate) fn list_gallery(
         items,
         total_items: records.len(),
         page,
-        page_size,
         total_pages,
+        column_count,
+        column_width,
     })
 }
 
@@ -362,7 +472,7 @@ fn collect_directory_images(root: &Path) -> Result<Vec<PathBuf>, String> {
             }
             if file_type.is_dir() {
                 pending.push(entry.path());
-            } else if file_type.is_file() && is_supported_image(&entry.path()) {
+            } else if file_type.is_file() && image_display_dimensions(&entry.path()).is_some() {
                 images.push(entry.path());
             }
         }
@@ -404,7 +514,7 @@ pub(crate) fn import_gallery(
             continue;
         }
         if metadata.is_file() {
-            if !is_supported_image(&source) {
+            if image_display_dimensions(&source).is_none() {
                 skipped += 1;
                 continue;
             }
@@ -447,6 +557,48 @@ pub(crate) fn import_gallery(
 mod tests {
     use super::*;
 
+    fn layout_record(index: usize) -> GalleryRecord {
+        GalleryRecord {
+            absolute_path: PathBuf::from(format!("image-{index}.jpg")),
+            relative_path: format!("image-{index}.jpg"),
+            file_name: format!("image-{index}.jpg"),
+            thumbnail_id: format!("{index:016x}"),
+            width: 1_600,
+            height: 1_200,
+        }
+    }
+
+    #[test]
+    fn masonry_density_changes_visible_capacity_without_losing_items() {
+        let records = (0..30).map(layout_record).collect::<Vec<_>>();
+        let input = |target_width| ListGalleryInput {
+            page: 1,
+            viewport_width: Some(900.0),
+            viewport_height: Some(500.0),
+            target_width: Some(target_width),
+            anchor_relative_path: None,
+            refresh: None,
+        };
+        let (_, _, compact_pages) = masonry_layout(&records, &input(128.0));
+        let (_, _, large_pages) = masonry_layout(&records, &input(288.0));
+
+        assert!(compact_pages[0].1 > large_pages[0].1);
+        assert_eq!(
+            compact_pages
+                .iter()
+                .map(|(start, end)| end - start)
+                .sum::<usize>(),
+            records.len()
+        );
+        assert_eq!(
+            large_pages
+                .iter()
+                .map(|(start, end)| end - start)
+                .sum::<usize>(),
+            records.len()
+        );
+    }
+
     #[test]
     fn duplicate_names_get_a_readable_suffix() {
         let root = std::env::temp_dir().join(format!("myvault-gallery-{}", Uuid::new_v4()));
@@ -473,6 +625,7 @@ mod tests {
 
         let records = scan_gallery(&gallery).unwrap();
         assert_eq!(records.len(), 1);
+        assert_eq!((records[0].width, records[0].height), (32, 24));
         assert_eq!(records[0].thumbnail_id.len(), 16);
         assert!(records[0]
             .thumbnail_id

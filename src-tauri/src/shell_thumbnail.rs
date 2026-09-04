@@ -24,13 +24,16 @@ use windows::{
     },
 };
 
-const THUMBNAIL_EDGE: i32 = 256;
+const DEFAULT_THUMBNAIL_EDGE: i32 = 256;
+const MIN_THUMBNAIL_EDGE: i32 = 96;
+const MAX_THUMBNAIL_EDGE: i32 = 256;
 const WORKERS: usize = 2;
 const QUEUE_CAPACITY: usize = 96;
 
 struct Job {
     app: AppHandle,
     thumbnail_id: String,
+    edge: i32,
     responder: UriSchemeResponder,
 }
 
@@ -164,7 +167,7 @@ fn bitmap_to_bmp(bitmap: HBITMAP) -> Result<Vec<u8>, String> {
     Ok(body)
 }
 
-fn load_shell_thumbnail(path: &Path) -> Result<Vec<u8>, String> {
+fn load_shell_thumbnail(path: &Path, edge: i32) -> Result<Vec<u8>, String> {
     let path = path.to_string_lossy().replace('/', "\\");
     let path = path
         .strip_prefix(r"\\?\UNC\")
@@ -180,10 +183,7 @@ fn load_shell_thumbnail(path: &Path) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("Shell thumbnail interface lookup failed: {error}"))?;
     let bitmap = unsafe {
         factory.GetImage(
-            SIZE {
-                cx: THUMBNAIL_EDGE,
-                cy: THUMBNAIL_EDGE,
-            },
+            SIZE { cx: edge, cy: edge },
             SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY,
         )
     }
@@ -196,7 +196,7 @@ fn process_job(job: Job) {
     // set, so queued work from a stale page exits without touching the file.
     let state = job.app.state::<crate::gallery::GalleryState>();
     let response = match crate::gallery::visible_thumbnail_path(&state, &job.thumbnail_id) {
-        Ok(Some(path)) => match load_shell_thumbnail(&path) {
+        Ok(Some(path)) => match load_shell_thumbnail(&path, job.edge) {
             Ok(body) => bmp_response(body),
             Err(error) => error_response(http::StatusCode::UNSUPPORTED_MEDIA_TYPE, &error),
         },
@@ -262,9 +262,21 @@ pub(crate) fn handle_protocol(
         ));
         return;
     }
+    let edge = request
+        .uri()
+        .query()
+        .and_then(|query| {
+            query.split('&').find_map(|pair| {
+                pair.strip_prefix("edge=")
+                    .and_then(|value| value.parse::<i32>().ok())
+            })
+        })
+        .unwrap_or(DEFAULT_THUMBNAIL_EDGE)
+        .clamp(MIN_THUMBNAIL_EDGE, MAX_THUMBNAIL_EDGE);
     let job = Job {
         app: context.app_handle().clone(),
         thumbnail_id: thumbnail_id.to_ascii_lowercase(),
+        edge,
         responder,
     };
     if let Err(error) = sender().try_send(job) {
@@ -289,7 +301,7 @@ mod tests {
             initialized
                 .ok()
                 .expect("fresh Shell thumbnail thread should initialize COM");
-            let result = load_shell_thumbnail(&path);
+            let result = load_shell_thumbnail(&path, DEFAULT_THUMBNAIL_EDGE);
             unsafe { CoUninitialize() };
             result
         })

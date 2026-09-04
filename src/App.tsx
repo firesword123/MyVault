@@ -82,6 +82,15 @@ function App() {
     () => notes.filter((note) => note.isDraft).sort((left, right) => right.updatedAt - left.updatedAt),
     [notes],
   );
+  const draftMoveTargets = useMemo(
+    () => folders.filter((folder) => folder !== "drafts" && folder !== "trash"),
+    [folders],
+  );
+
+  function draftDestination(noteId: string) {
+    const selected = draftTargetFolders[noteId];
+    return selected && draftMoveTargets.includes(selected) ? selected : draftMoveTargets[0] ?? "";
+  }
 
   function isFolderPathWithin(folderPath: string, rootFolder: string) {
     return folderPath === rootFolder || folderPath.startsWith(`${rootFolder}/`);
@@ -124,7 +133,7 @@ function App() {
   }
 
   function isProtectedFolderPath(folderPath: string) {
-    return folderPath === "drafts" || folderPath === "inbox" || folderPath === "trash";
+    return folderPath === "drafts" || folderPath === "trash";
   }
 
   async function flushPendingDraft(note: NoteDetail | null) {
@@ -202,7 +211,7 @@ function App() {
         if (detail.folderPath === "drafts") {
           setDraftTargetFolders((current) => ({
             ...current,
-            [detail.id]: current[detail.id] ?? "inbox",
+            [detail.id]: current[detail.id] ?? "",
           }));
         }
       });
@@ -258,7 +267,7 @@ function App() {
         input: { title: "Untitled Note" },
       });
       await refreshWorkspace();
-      setDraftTargetFolders((current) => ({ ...current, [detail.id]: current[detail.id] ?? "inbox" }));
+      setDraftTargetFolders((current) => ({ ...current, [detail.id]: current[detail.id] ?? "" }));
       await openNote(detail.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -523,23 +532,27 @@ function App() {
 
   async function saveDraftToFolder(folderPath: string) {
     if (!activeNote || activeNote.folderPath !== "drafts") return;
+    if (!folderPath || !draftMoveTargets.includes(folderPath)) {
+      setNoteErrorMessage(messages.errorMoveTargetMissing);
+      return;
+    }
     try {
       const saved = await invoke<NoteDetail>("save_note", {
-        input: { id: activeNote.id, title: activeNote.title, blocks: activeNote.blocks, mode: "commit" },
+        input: {
+          id: activeNote.id,
+          title: activeNote.title,
+          blocks: activeNote.blocks,
+          mode: "commit",
+          targetFolder: folderPath,
+        },
       });
-      const nextDetail =
-        folderPath && folderPath !== "inbox"
-          ? await invoke<NoteDetail>("move_note", {
-              input: { id: saved.id, folderPath },
-            })
-          : saved;
       setDraftTargetFolders((current) => {
         const next = { ...current };
         delete next[saved.id];
         return next;
       });
       await refreshWorkspace();
-      await openNote(nextDetail.id);
+      await openNote(saved.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(mapNoteErrorMessage(message));
@@ -654,7 +667,7 @@ function App() {
       event.preventDefault();
       if (!activeNote) return;
       if (activeNote.folderPath === "drafts") {
-        void saveDraftToFolder(draftTargetFolders[activeNote.id] ?? "inbox");
+        void saveDraftToFolder(draftDestination(activeNote.id));
       } else {
         void persistNote(activeNote, "commit");
       }
@@ -887,8 +900,8 @@ function App() {
         messages={messages}
         language={settings.language}
         activeNote={activeNote}
-        draftMoveTargets={folders.filter((folder) => folder !== "drafts" && folder !== "trash")}
-        draftTargetFolder={activeNote ? draftTargetFolders[activeNote.id] ?? "inbox" : "inbox"}
+        draftMoveTargets={draftMoveTargets}
+        draftTargetFolder={activeNote ? draftDestination(activeNote.id) : ""}
         saveState={
           activeNote && noteSignature(activeNote) !== lastSavedSignature.current ? "saving" : "saved"
         }

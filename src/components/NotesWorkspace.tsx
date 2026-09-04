@@ -263,7 +263,7 @@ function groupNotes(messages: LocaleMessages, folders: string[], notes: NoteSumm
             ? messages.trashLabel
             : key,
     notes: groups.get(key) ?? [],
-    allowManage: key !== "drafts" && key !== "inbox" && key !== "trash",
+    allowManage: key !== "drafts" && key !== "trash",
   }));
 }
 
@@ -298,7 +298,11 @@ export function NotesListPanel({
   const noteIndex = new Map(filteredNotes.map((note) => [note.id, note]));
   const mainGroups = groups.filter((group) => group.key !== "trash");
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
-  const [activeMenuFolder, setActiveMenuFolder] = useState<string | null>(null);
+  const [folderContextMenu, setFolderContextMenu] = useState<{
+    group: NoteGroup;
+    x: number;
+    y: number;
+  } | null>(null);
   const [dragTargetFolder, setDragTargetFolder] = useState<string | null>(null);
   const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
   const dragTargetFolderRef = useRef<string | null>(null);
@@ -315,14 +319,14 @@ export function NotesListPanel({
     x: number;
     y: number;
   } | null>(null);
-  const menuShellRef = useRef<HTMLDivElement | null>(null);
+  const folderContextMenuRef = useRef<HTMLDivElement | null>(null);
   const noteContextMenuRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
-      if (!menuShellRef.current?.contains(event.target as Node)) {
-        setActiveMenuFolder(null);
+      if (!folderContextMenuRef.current?.contains(event.target as Node)) {
+        setFolderContextMenu(null);
       }
       if (!noteContextMenuRef.current?.contains(event.target as Node)) {
         setNoteContextMenu(null);
@@ -443,6 +447,13 @@ export function NotesListPanel({
               dragTargetFolder === group.key ? "is-drop-target" : ""
             }`}
             onClick={() => onToggleFolder(group.key)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setNoteContextMenu(null);
+              const menuHeight = group.allowManage ? 118 : 46;
+              const nextPosition = positionContextMenu(event.clientX, event.clientY, 190, menuHeight);
+              setFolderContextMenu({ group, x: nextPosition.x, y: nextPosition.y });
+            }}
             aria-expanded={openFolders[group.key] !== false}
           >
             <span className={`folder-chevron ${openFolders[group.key] !== false ? "is-open" : ""}`}>
@@ -459,64 +470,6 @@ export function NotesListPanel({
             <span className="folder-count">{group.notes.length}</span>
           </button>
 
-          {group.allowManage ? (
-            <div className="folder-menu-shell" ref={activeMenuFolder === group.key ? menuShellRef : null}>
-              {activeMenuFolder === group.key ? (
-                <div className="folder-inline-actions">
-                  <button
-                    type="button"
-                    className="icon-button folder-inline-action"
-                    aria-label={messages.openFolderButton}
-                    title={messages.openFolderButton}
-                    onClick={() => {
-                      onRevealFolder(group.key);
-                      setActiveMenuFolder(null);
-                    }}
-                  >
-                    <FolderOpen size={14} strokeWidth={1.8} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button folder-inline-action"
-                    aria-label={messages.renameFolderButton}
-                    title={messages.renameFolderButton}
-                    onClick={() => {
-                      setFolderModal({
-                        mode: "rename",
-                        folderPath: group.key,
-                        value: group.key,
-                      });
-                      setActiveMenuFolder(null);
-                    }}
-                  >
-                    <Pencil size={14} strokeWidth={1.8} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-button folder-inline-action is-danger"
-                    aria-label={messages.deleteFolderButton}
-                    title={messages.deleteFolderButton}
-                    onClick={() => {
-                      onDeleteFolder(group.key);
-                      setActiveMenuFolder(null);
-                    }}
-                  >
-                    <Trash2 size={14} strokeWidth={1.8} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="icon-button folder-menu-trigger"
-                  aria-label={messages.folderOptionsButton}
-                  title={messages.folderOptionsButton}
-                  onClick={() => setActiveMenuFolder(group.key)}
-                >
-                  <MoreHorizontal size={15} strokeWidth={1.8} />
-                </button>
-              )}
-            </div>
-          ) : null}
         </div>
 
         <div className={`note-group-items ${openFolders[group.key] === false ? "is-collapsed" : ""}`}>
@@ -682,6 +635,59 @@ export function NotesListPanel({
               </button>
             </div>
           </div>
+        </div>
+      ) : null}
+
+      {folderContextMenu ? (
+        <div
+          ref={folderContextMenuRef}
+          className="note-context-menu"
+          style={{
+            left: `${folderContextMenu.x}px`,
+            top: `${folderContextMenu.y}px`,
+          }}
+        >
+          <button
+            type="button"
+            className="note-context-menu-item"
+            onClick={() => {
+              onRevealFolder(folderContextMenu.group.key);
+              setFolderContextMenu(null);
+            }}
+          >
+            <FolderOpen size={15} strokeWidth={1.8} />
+            {messages.openFolderButton}
+          </button>
+          {folderContextMenu.group.allowManage ? (
+            <>
+              <button
+                type="button"
+                className="note-context-menu-item"
+                onClick={() => {
+                  setFolderModal({
+                    mode: "rename",
+                    folderPath: folderContextMenu.group.key,
+                    value: folderContextMenu.group.key,
+                  });
+                  setFolderContextMenu(null);
+                }}
+              >
+                <Pencil size={15} strokeWidth={1.8} />
+                {messages.renameFolderButton}
+              </button>
+              <button
+                type="button"
+                className="note-context-menu-item is-danger"
+                onClick={() => {
+                  onDeleteFolder(folderContextMenu.group.key);
+                  setFolderContextMenu(null);
+                }}
+              >
+                <Trash2 size={15} strokeWidth={1.8} />
+                {messages.deleteFolderButton}
+              </button>
+            </>
+          ) : null}
         </div>
       ) : null}
 

@@ -1233,3 +1233,506 @@
   color: var(--text-muted);
   background: transparent;
 }
+
+/* Library browser visual source: library.html */
+.asmr-module-body {
+  display: flex;
+  min-height: 0;
+  background: var(--bg-shell);
+}
+
+.library-sidebar {
+  width: 236px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 10px 10px;
+  border-right: 0;
+  background: var(--bg-shell);
+  user-select: none;
+  gap: 2px;
+}
+
+.library-sidebar .side-h {
+  margin: 2px 4px 14px;
+}
+
+.library-sidebar .side-t1 {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+.library-sidebar .side-t2 {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin-top: 2px;
+}
+
+.library-sidebar .nav-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--text-muted);
+  transition: all 0.13s;
+  text-align: left;
+}
+
+.library-sidebar .nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.library-sidebar .nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.library-sidebar .nav-item svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.library-sidebar .side-foot {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-panel);
+  display: flex;
+  gap: 8px;
+}
+
+.asmr-library-panel .btn,
+.library-sidebar .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: all 0.14s;
+}
+
+.asmr-library-panel .btn svg,
+.library-sidebar .btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.asmr-library-panel .btn.primary,
+.library-sidebar .btn.primary {
+  background: var(--accent-strong);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(107, 92, 231, 0.25);
+  flex: 1;
+}
+
+.asmr-library-panel .btn.primary:hover:not(:disabled),
+.library-sidebar .btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.asmr-library-panel .btn.ghost,
+.library-sidebar .btn.ghost {
+  border: 1px solid var(--border-panel);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  flex: 1;
+}
+
+.asmr-library-panel .btn.ghost:hover:not(:disabled),
+.library-sidebar .btn.ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--line-strong);
+}
+
+.asmr-library-panel .btn.danger-ghost {
+  color: var(--danger-text);
+}
+
+.asmr-library-panel .btn.danger-ghost:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.asmr-library-panel .btn:disabled,
+.library-sidebar .btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.library-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-panel);
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 14px 0 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.library-content > .asmr-content-view {
+  flex: 1;
+  min-height: 0;
+}
+
+.library-content .asmr-library-panel {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+}
+
+.asmr-library-panel .toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--border-panel);
+  flex-wrap: wrap;
+}
+
+.asmr-library-panel .tb-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.asmr-library-panel .tb-title span {
+  display: block;
+  font-size: 12px;
+  color: var(--text-faint);
+  font-weight: 500;
+  margin-top: 1px;
+}
+
+.asmr-library-panel .search {
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-panel);
+  border-radius: 10px;
+  flex: 1;
+  min-width: 180px;
+  max-width: 320px;
+  cursor: text;
+}
+
+.asmr-library-panel .search:focus-within {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.asmr-library-panel .search > svg {
+  width: 14px;
+  height: 14px;
+  color: var(--text-faint);
+  flex: 0 0 auto;
+}
+
+.asmr-library-panel .search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  outline: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.asmr-library-panel .search input::placeholder {
+  color: var(--text-faint);
+}
+
+.asmr-library-panel .perpage {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.asmr-library-panel .select {
+  height: 32px;
+  padding: 0 26px 0 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  border: 1px solid var(--border-panel);
+  color: var(--text-primary);
+  background-color: var(--bg-panel);
+  font-size: 12.5px;
+  outline: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a09a90' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+
+.asmr-library-panel .select:focus {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.asmr-library-panel .toolbar .spacer {
+  flex: 1;
+}
+
+.asmr-library-panel .tb-btns {
+  display: flex;
+  gap: 8px;
+}
+
+.asmr-library-panel .grid-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+
+.asmr-library-panel .work-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(430px, 1fr));
+  gap: 14px;
+}
+
+.asmr-library-panel .work-card {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border-panel);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg-panel);
+  transition: all 0.15s;
+  min-height: 150px;
+  text-align: left;
+}
+
+.asmr-library-panel .work-card:hover,
+.asmr-library-panel .work-card.selected {
+  border-color: var(--line-strong);
+  box-shadow: 0 4px 14px rgba(30, 25, 15, 0.06);
+}
+
+.asmr-library-panel .w-cover {
+  width: 216px;
+  flex: 0 0 auto;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, hsl(var(--h), 60%, 78%), hsl(calc(var(--h) + 40), 55%, 62%));
+}
+
+.asmr-library-panel .w-cover img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.asmr-library-panel .w-cover::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.3), transparent 55%);
+}
+
+.asmr-library-panel .w-rj {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 650;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 2px 7px;
+  border-radius: 6px;
+  letter-spacing: 0.5px;
+  z-index: 1;
+}
+
+.asmr-library-panel .w-info {
+  flex: 1;
+  min-width: 0;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.asmr-library-panel .w-title {
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.asmr-library-panel .w-circle {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.asmr-library-panel .w-loc {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.asmr-library-panel .w-loc svg {
+  width: 12px;
+  height: 12px;
+}
+
+.asmr-library-panel .w-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.asmr-library-panel .w-tag {
+  font-size: 11.5px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+
+.asmr-library-panel .grid-empty {
+  padding: 60px 20px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.asmr-library-panel .meta-list {
+  border-top: 1px solid var(--border-panel);
+}
+
+.asmr-library-panel .meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 20px;
+  border-bottom: 1px solid var(--border-panel);
+  transition: background 0.12s;
+  cursor: pointer;
+}
+
+.asmr-library-panel .meta-row:hover {
+  background: var(--bg-hover);
+}
+
+.asmr-library-panel .meta-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 550;
+}
+
+.asmr-library-panel .meta-count {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  min-width: 26px;
+  text-align: center;
+  padding: 2px 7px;
+  border-radius: 7px;
+}
+
+.asmr-library-panel .meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.asmr-library-panel .meta-row .btn {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.asmr-library-panel .pager {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-panel);
+  user-select: none;
+}
+
+.asmr-library-panel .pg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-panel);
+  transition: all 0.13s;
+}
+
+.asmr-library-panel .pg-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--line-strong);
+}
+
+.asmr-library-panel .pg-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.asmr-library-panel .pg-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.asmr-library-panel .pg-info {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  min-width: 52px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.asmr-library-panel .nice-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.asmr-library-panel .nice-scroll::-webkit-scrollbar-thumb {
+  background: rgba(128, 124, 116, 0.35);
+  border: 3px solid transparent;
+  border-radius: 10px;
+  background-clip: padding-box;
+}

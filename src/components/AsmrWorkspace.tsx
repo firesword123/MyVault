@@ -4,26 +4,18 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useEmbeddedGuard } from "../useEmbeddedGuard";
 import {
-  Building2,
   Check,
   ChevronLeft,
   ChevronRight,
-  Clock3,
-  Copy,
   File,
   FileAudio2,
   FileImage,
   FileText,
   Folder,
   FolderOpen,
-  Library,
-  Mic2,
-  MoveRight,
   Play,
   Plus,
-  RefreshCw,
   Search,
-  Tags,
   X,
 } from "lucide-react";
 import type {
@@ -36,12 +28,6 @@ import type {
   AsmrWork,
   PlayerQueueRequest,
 } from "../types";
-
-type AsmrNavItem = {
-  id: string;
-  label: string;
-  icon: typeof Library;
-};
 
 type AsmrSection = "library" | "circles" | "tags" | "voices";
 
@@ -75,13 +61,6 @@ type StructuredMetadataInput = {
   note?: unknown;
 };
 
-const navItems: AsmrNavItem[] = [
-  { id: "library", label: "媒体库", icon: Library },
-  { id: "circles", label: "社团", icon: Building2 },
-  { id: "tags", label: "标签", icon: Tags },
-  { id: "voices", label: "声优", icon: Mic2 },
-];
-
 function FileIcon({ kind }: { kind: AsmrFileItem["kind"] }) {
   if (kind === "folder") return <Folder size={26} fill="currentColor" strokeWidth={1.75} />;
   if (kind === "subtitle") return <FileText size={25} strokeWidth={1.75} />;
@@ -108,6 +87,10 @@ function parentFolderPath(path: string) {
   const normalized = path.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   const index = normalized.lastIndexOf("/");
   return index >= 0 ? normalized.slice(0, index) : "";
+}
+
+function workCoverHue(rjId: string) {
+  return Array.from(rjId).reduce((value, character) => (value * 31 + character.charCodeAt(0)) % 360, 24);
 }
 
 export function AsmrWorkspace() {
@@ -206,11 +189,16 @@ export function AsmrWorkspace() {
     });
   }, [baseWorks, searchText]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredWorks.length / pageSize));
+  const pagedEntryCount = showingFilterList ? filterEntries.length : filteredWorks.length;
+  const pageCount = Math.max(1, Math.ceil(pagedEntryCount / pageSize));
   const visibleWorks = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filteredWorks.slice(start, start + pageSize);
   }, [filteredWorks, page, pageSize]);
+  const visibleFilterEntries = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filterEntries.slice(start, start + pageSize);
+  }, [filterEntries, page, pageSize]);
 
   const bootstrapAsmr = useCallback(async () => {
     setErrorMessage("");
@@ -715,54 +703,52 @@ export function AsmrWorkspace() {
 
   return (
     <div className="module-body asmr-module-body">
-      <aside className="asmr-sidebar">
-        <div className="asmr-sidebar-header">
-          <span className="section-label">DL_ASMR</span>
-          <h1>DLsite 音声资料库</h1>
+      <aside className="asmr-sidebar library-sidebar">
+        <div className="side-h">
+          <div className="side-t1">DL_ASMR</div>
+          <div className="side-t2">DLsite 音声资料库</div>
         </div>
 
-        <div className="asmr-nav-list">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={`asmr-nav-item ${activeSection === item.id ? "is-active" : ""}`}
-                onClick={() => selectSection(item.id as AsmrSection)}
-              >
-                <Icon size={20} strokeWidth={1.9} />
-                <span>
-                  <strong>{item.label}</strong>
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <button type="button" className={`nav-item ${activeSection === "library" ? "active" : ""}`} onClick={() => selectSection("library")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="18" y2="20" /><line x1="6" y1="4" x2="6" y2="20" /><line x1="12" y1="10" x2="12" y2="20" /></svg>
+          媒体库
+        </button>
+        <button type="button" className={`nav-item ${activeSection === "circles" ? "active" : ""}`} onClick={() => selectSection("circles")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /><path d="M9 21v-4h6v4" /></svg>
+          社团
+        </button>
+        <button type="button" className={`nav-item ${activeSection === "tags" ? "active" : ""}`} onClick={() => selectSection("tags")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z" /><circle cx="7.5" cy="7.5" r="0.8" fill="currentColor" /></svg>
+          标签
+        </button>
+        <button type="button" className={`nav-item ${activeSection === "voices" ? "active" : ""}`} onClick={() => selectSection("voices")}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" /><path d="M19 10v1a7 7 0 0 1-14 0v-1" /><path d="M12 18v3" /></svg>
+          声优
+        </button>
 
-        <div className="asmr-import-actions">
-          <button type="button" className="asmr-import-button" disabled={busy} onClick={() => void importWork("copy")}>
-            <Copy size={17} strokeWidth={1.9} />
-            <span>{busy ? "导入中..." : "复制导入"}</span>
+        <div className="side-foot">
+          <button type="button" className="btn primary" disabled={busy} onClick={() => void importWork("copy")}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+            {busy ? "导入中..." : "复制导入"}
           </button>
-          <button type="button" className="asmr-import-button is-move" disabled={busy} onClick={() => void importWork("move")} title="同一磁盘中通常可以快速完成">
-            <MoveRight size={17} strokeWidth={1.9} />
-            <span>{busy ? "导入中..." : "移动导入"}</span>
+          <button type="button" className="btn ghost" disabled={busy} onClick={() => void importWork("move")} title="同一磁盘中通常可以快速完成">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+            {busy ? "导入中..." : "移动导入"}
           </button>
         </div>
       </aside>
 
-      <main className="asmr-main">
+      <main className="asmr-main library-content">
         <div className="asmr-content-view">
           {view === "library" ? (
             <section className="asmr-library-panel">
-              <div className="asmr-library-toolbar">
-                <div>
-                  <span className="section-label">{sectionLabel}</span>
-                  <h2>{activeFilterLabel || "RJ 作品"}</h2>
+              <div className="toolbar">
+                <div className="tb-title">
+                  {sectionLabel}
+                  <span>{activeFilterLabel || "RJ 作品"}</span>
                 </div>
-                <label className="asmr-search">
-                  <Search size={16} strokeWidth={1.8} />
+                <label className="search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
                   <input
                     type="search"
                     placeholder={showingFilterList ? `搜索${sectionLabel}` : "搜索 RJ、标题、社团、标签"}
@@ -773,9 +759,10 @@ export function AsmrWorkspace() {
                     }}
                   />
                 </label>
-                <label className="asmr-page-size">
-                  <span>每页</span>
+                <label className="perpage">
+                  每页
                   <select
+                    className="select"
                     value={pageSize}
                     onChange={(event) => {
                       setPageSize(Number(event.target.value));
@@ -784,49 +771,50 @@ export function AsmrWorkspace() {
                   >
                     <option value={8}>8</option>
                     <option value={12}>12</option>
-                    <option value={16}>16</option>
+                    <option value={20}>20</option>
                   </select>
                 </label>
-                <button type="button" className="soft-button" disabled={!libraryPath} onClick={() => void openInExplorer(libraryPath)}>
-                  <FolderOpen size={16} strokeWidth={1.8} />
-                  打开资源目录
-                </button>
-                <button type="button" className="soft-button" disabled={busy} onClick={() => void bootstrapAsmr()}>
-                  <RefreshCw size={16} strokeWidth={1.8} />
-                  刷新
-                </button>
-                {activeFilter ? (
-                  <button type="button" className="soft-button" onClick={() => setActiveFilter(null)}>
-                    返回{sectionLabel}
+                <div className="spacer" />
+                <div className="tb-btns">
+                  <button type="button" className="btn ghost" disabled={!libraryPath} onClick={() => void openInExplorer(libraryPath)}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+                    打开资源目录
                   </button>
-                ) : null}
-                {showingFilterList ? (
-                  <button
-                    type="button"
-                    className="soft-button"
-                    onClick={() => void upsertDictionaryValue(activeSection as Exclude<AsmrSection, "library">)}
-                  >
-                    新增{sectionLabel}
+                  <button type="button" className="btn ghost" disabled={busy} onClick={() => void bootstrapAsmr()}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3.5-7" /><polyline points="21 3 21 9 15 9" /></svg>
+                    刷新
                   </button>
-                ) : null}
+                  {activeFilter ? (
+                    <button type="button" className="btn ghost" onClick={() => setActiveFilter(null)}>
+                      返回{sectionLabel}
+                    </button>
+                  ) : null}
+                  {showingFilterList ? (
+                    <button type="button" className="btn primary" onClick={() => void upsertDictionaryValue(activeSection as Exclude<AsmrSection, "library">)}>
+                      新增{sectionLabel}
+                    </button>
+                  ) : null}
+                </div>
               </div>
 
               {errorMessage ? <div className="error-banner">{errorMessage}</div> : null}
 
-              {showingFilterList ? (
-                filterEntries.length ? (
-                  <div className="asmr-filter-grid">
-                    {filterEntries.map((entry) => (
+              <div className="grid-wrap nice-scroll">
+                {showingFilterList ? (
+                  visibleFilterEntries.length ? (
+                    <div className="meta-list">
+                      {visibleFilterEntries.map((entry) => (
                       <div
                         key={entry.value}
-                        className="asmr-filter-row"
+                        className="meta-row"
                         onClick={() => selectFilter(activeSection as Exclude<AsmrSection, "library">, entry.value)}
                       >
-                        <span>{entry.value}</span>
-                        <strong>{entry.count}</strong>
-                        <span className="asmr-filter-actions">
+                        <span className="meta-name">{entry.value}</span>
+                        <span className="meta-count">{entry.count}</span>
+                        <span className="meta-actions">
                           <button
                             type="button"
+                            className="btn ghost"
                             onClick={(event) => {
                               event.stopPropagation();
                               void upsertDictionaryValue(activeSection as Exclude<AsmrSection, "library">, entry.value);
@@ -836,7 +824,7 @@ export function AsmrWorkspace() {
                           </button>
                           <button
                             type="button"
-                            className="is-danger"
+                            className="btn danger-ghost"
                             onClick={(event) => {
                               event.stopPropagation();
                               void deleteDictionaryValue(activeSection as Exclude<AsmrSection, "library">, entry.value);
@@ -846,70 +834,56 @@ export function AsmrWorkspace() {
                           </button>
                         </span>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-editor">
-                    <h3>暂无{sectionLabel}</h3>
-                    <p>给作品填写{sectionLabel}后会在这里出现。</p>
-                  </div>
-                )
-              ) : visibleWorks.length ? (
-                <div className="asmr-work-grid">
-                  {visibleWorks.map((work) => (
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid-empty">没有匹配的条目</div>
+                  )
+                ) : visibleWorks.length ? (
+                  <div className="work-grid">
+                    {visibleWorks.map((work) => (
                     <button
                       key={work.rjId}
                       type="button"
-                      className={`asmr-work-card ${work.rjId === selectedWorkId ? "is-selected" : ""}`}
+                      className={`work-card ${work.rjId === selectedWorkId ? "selected" : ""}`}
                       onClick={() => openWork(work.rjId)}
                     >
-                      <span className="asmr-work-cover">
+                      <span className="w-cover" style={{ ["--h" as string]: workCoverHue(work.rjId) }}>
                         {work.coverPath ? <img src={convertFileSrc(work.coverPath)} alt="" /> : null}
-                        <strong>{work.rjId}</strong>
+                        <span className="w-rj">{work.rjId}</span>
                       </span>
-                      <span className="asmr-work-card-body">
-                        <strong>{work.title || work.rjId}</strong>
-                        <span>{work.circle || "社团未指定"}</span>
-                        <span className="asmr-work-card-meta">
-                          <Clock3 size={14} strokeWidth={1.8} />
+                      <span className="w-info">
+                        <span className="w-title">{work.title || work.rjId}</span>
+                        <span className="w-circle">{work.circle || "社团未指定"}</span>
+                        <span className="w-loc">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
                           本地资源
                         </span>
-                        <span className="asmr-card-chip-row">
+                        <span className="w-tags">
                           {work.tags.slice(0, 4).map((tag) => (
-                            <span key={tag}>{tag}</span>
-                          ))}
-                          {work.voiceActors.slice(0, 2).map((voice) => (
-                            <span key={voice} className="is-voice">
-                              {voice}
-                            </span>
+                            <span key={tag} className="w-tag">{tag}</span>
                           ))}
                         </span>
                       </span>
                     </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="empty-editor">
-                  <h3>暂无 RJ 作品</h3>
-                  <p>可复制或移动本地作品目录，并写入 MyVault 本地索引。</p>
-                </div>
-              )}
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid-empty">没有匹配的条目</div>
+                )}
+              </div>
 
-              {!showingFilterList ? (
-                <div className="asmr-library-pagination">
-                  <button type="button" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>
-                    <ChevronLeft size={17} strokeWidth={1.8} />
-                    <span>上一页</span>
-                  </button>
-                  <span>
-                    {page} / {pageCount}
-                  </span>
-                  <button type="button" disabled={page === pageCount} onClick={() => setPage((current) => current + 1)}>
-                    <span>下一页</span>
-                    <ChevronRight size={17} strokeWidth={1.8} />
-                  </button>
-                </div>
-              ) : null}
+              <div className="pager">
+                <button type="button" className="pg-btn" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg>
+                  上一页
+                </button>
+                <span className="pg-info">{page} / {pageCount}</span>
+                <button type="button" className="pg-btn" disabled={page === pageCount} onClick={() => setPage((current) => current + 1)}>
+                  下一页
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6" /></svg>
+                </button>
+              </div>
             </section>
           ) : (
             <section className="asmr-detail-view">

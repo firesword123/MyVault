@@ -115,7 +115,7 @@
   "errorFolderInvalid": "The folder path is invalid.",
   "errorFolderSystemProtected": "System folders cannot be renamed or deleted.",
   "errorMoveTargetMissing": "Choose an existing folder.",
-  "errorTrashRestoreMissing": "The original folder is unavailable. The note was restored to Inbox.",
+  "errorTrashRestoreMissing": "No restore destination is available. Create a folder first.",
   "folderActiveLabel": "Current folder",
   "moveByDragHint": "Drag a note onto a folder to move it.",
   "dragToTrashHint": "Drop on Trash to move it there.",

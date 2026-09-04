@@ -77,6 +77,7 @@ pub(crate) struct SaveNoteInput {
     title: String,
     blocks: Vec<NoteBlock>,
     mode: String,
+    target_folder: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -193,11 +194,11 @@ fn normalize_folder_path(folder: &str) -> Result<String, String> {
 }
 
 fn is_system_folder(folder: &str) -> bool {
-    matches!(folder, DRAFTS_FOLDER | INBOX_FOLDER | TRASH_FOLDER)
+    matches!(folder, DRAFTS_FOLDER | TRASH_FOLDER)
 }
 
 fn is_inside_system_folder(folder: &str) -> bool {
-    [DRAFTS_FOLDER, INBOX_FOLDER, TRASH_FOLDER]
+    [DRAFTS_FOLDER, TRASH_FOLDER]
         .iter()
         .any(|system| folder == *system || folder.starts_with(&format!("{system}/")))
 }
@@ -530,6 +531,9 @@ fn seed_default_note(app: &AppHandle) -> Result<(), String> {
     if !collect_notes(app)?.is_empty() {
         return Ok(());
     }
+    if !notes_folder_dir(app, INBOX_FOLDER)?.is_dir() {
+        return Ok(());
+    }
 
     let ts = now_ts();
     let id = next_note_id(app);
@@ -702,7 +706,18 @@ pub(crate) fn save_note(app: AppHandle, input: SaveNoteInput) -> Result<NoteDeta
     document.updated_at = now_ts();
 
     let next_folder = if input.mode == "commit" && is_draft_folder(&current_folder) {
-        INBOX_FOLDER.to_string()
+        let target_folder = input
+            .target_folder
+            .as_deref()
+            .ok_or_else(|| "target folder not found".to_string())?;
+        let target_folder = normalize_folder_path(target_folder)?;
+        if matches!(target_folder.as_str(), DRAFTS_FOLDER | TRASH_FOLDER) {
+            return Err("target folder is not allowed".to_string());
+        }
+        if !notes_folder_dir(&app, &target_folder)?.is_dir() {
+            return Err("target folder not found".to_string());
+        }
+        target_folder
     } else {
         current_folder
     };
@@ -765,20 +780,19 @@ pub(crate) fn restore_note(app: AppHandle, id: String) -> Result<NoteDetail, Str
         return note_to_detail(&app, &path, document);
     }
 
-    let requested_folder = document
-        .original_folder_path
-        .clone()
-        .unwrap_or_else(|| INBOX_FOLDER.to_string());
-    let target_folder = match normalize_folder_path(&requested_folder) {
-        Ok(folder) if !is_trash_folder(&folder) => folder,
-        _ => INBOX_FOLDER.to_string(),
-    };
-
-    let target_folder = if notes_folder_dir(&app, &target_folder)?.exists() {
-        target_folder
-    } else {
-        INBOX_FOLDER.to_string()
-    };
+    let requested_folder = document.original_folder_path.clone();
+    let target_folder = requested_folder
+        .as_deref()
+        .and_then(|folder| normalize_folder_path(folder).ok())
+        .filter(|folder| !is_trash_folder(folder))
+        .filter(|folder| notes_folder_dir(&app, folder).is_ok_and(|path| path.is_dir()))
+        .or_else(|| {
+            collect_folders(&app).ok()?.into_iter().find(|folder| {
+                !matches!(folder.as_str(), DRAFTS_FOLDER | TRASH_FOLDER)
+                    && notes_folder_dir(&app, folder).is_ok_and(|path| path.is_dir())
+            })
+        })
+        .ok_or_else(|| "target folder not found".to_string())?;
 
     if let Some(parent) = note_file_path_in_folder(&app, &target_folder, &id)?.parent() {
         fs::create_dir_all(parent)
@@ -897,6 +911,14 @@ pub(crate) fn empty_trash(app: AppHandle) -> Result<Vec<NoteSummary>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inbox_is_a_user_managed_compatibility_folder() {
+        assert!(!is_system_folder(INBOX_FOLDER));
+        assert!(!is_inside_system_folder(INBOX_FOLDER));
+        assert!(is_system_folder(DRAFTS_FOLDER));
+        assert!(is_system_folder(TRASH_FOLDER));
+    }
     use std::time::Duration;
 
     fn temp_dir_path(label: &str) -> PathBuf {

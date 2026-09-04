@@ -169,10 +169,6 @@ pub(crate) fn drafts_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(notes_dir(app)?.join("_Drafts"))
 }
 
-pub(crate) fn inbox_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(notes_dir(app)?.join("_Inbox"))
-}
-
 pub(crate) fn trash_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(notes_dir(app)?.join("_Trash"))
 }
@@ -219,7 +215,6 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     let vault = vault_dir(app)?;
     let notes = notes_dir(app)?;
     let drafts = drafts_dir(app)?;
-    let inbox = inbox_dir(app)?;
     let trash = trash_dir(app)?;
     let settings = settings_path(app)?;
 
@@ -227,7 +222,6 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     fs::create_dir_all(&vault).map_err(|error| format!("failed to create vault dir: {error}"))?;
     fs::create_dir_all(&notes).map_err(|error| format!("failed to create notes dir: {error}"))?;
     fs::create_dir_all(&drafts).map_err(|error| format!("failed to create drafts dir: {error}"))?;
-    fs::create_dir_all(&inbox).map_err(|error| format!("failed to create inbox dir: {error}"))?;
     fs::create_dir_all(&trash).map_err(|error| format!("failed to create trash dir: {error}"))?;
 
     if !settings.exists() {
