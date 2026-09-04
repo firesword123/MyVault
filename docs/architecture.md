@@ -16,6 +16,8 @@ ASMR and Gallery are native child WebViews placed inside the shell window. They 
 
 This boundary is intentional: JavaScript cleanup cannot guarantee that Chromium returns decoded image, font, GPU and allocator memory to the OS. Closing the WebView2 controller lets its independently profiled process group exit, which is the measurable release mechanism.
 
+A real-library ASMR check on 2026-09-04 reached about 2 GiB while loading original high-resolution artwork, then returned to the roughly 500 MiB shell baseline after switching modules. This confirms the lifecycle boundary; it is not a fixed memory ceiling.
+
 ## Module rules
 
 - Keep lightweight, frequently used UI in `shell`.
@@ -41,9 +43,9 @@ Original files load only after explicit preview. Large-original preview peaks ar
 
 `MyVaultData` contains user-owned notes, attachments, DL_ASMR works, Gallery originals, settings, manifests and migration reports. It does not contain WebView2 profiles or newly generated Gallery thumbnails.
 
-Production WebView2 profiles live below the application's local-data directory. The isolated verification executable uses `.test-data/single-window/WebViews` and `.test-data/single-window/MyVaultData` so automated tests cannot modify the active library.
+WebView2 profiles live below the application's local-data directory and remain separate from user-owned Vault data.
 
-Data-root resolution order is: explicit test override, `MYVAULT_DATA_ROOT`, optional `myvault.data-route.json` beside the executable, then the platform build default. Debug builds default to `.dev-data/MyVaultData`; packaged builds default to `MyVaultData` beside the application directory.
+Data-root resolution order is: `MYVAULT_DATA_ROOT`, optional `myvault.data-route.json` beside the executable, then the platform build default. Debug builds default to `.dev-data/MyVaultData`; packaged builds default to `MyVaultData` beside the application directory.
 
 ## Feature checklist
 

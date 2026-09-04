@@ -165,10 +165,6 @@ pub(crate) fn vault_dir(app: &AppHandle) -> Result<PathBuf, String> {
     data_root_dir(app)
 }
 
-pub(crate) fn set_data_root_override(path: PathBuf) -> Result<(), String> {
-    crate::storage::set_data_root_override(path)
-}
-
 pub(crate) fn notes_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_root_dir(app)?.join("Notes"))
 }

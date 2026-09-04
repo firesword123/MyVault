@@ -11,10 +11,6 @@ autobins = false
 name = "myvault"
 path = "src/main.rs"
 
-[[bin]]
-name = "myvault-webviews"
-path = "src/bin/myvault-webviews.rs"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -38,11 +34,6 @@ tauri-plugin-process = "2.3.1"
 image = { version = "0.25.6", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 sysinfo = "0.30"
 uuid = { version = "1", features = ["v4"] }
-windows-sys = { version = "0.59", features = [
-  "Win32_Foundation",
-  "Win32_System_ProcessStatus",
-  "Win32_System_Threading",
-] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",

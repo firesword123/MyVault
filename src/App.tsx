@@ -565,7 +565,6 @@ function App() {
   }
 
   async function handleUpdateAction() {
-    if (embedded.experiment) return;
     if (updateBusy) return;
 
     if (availableUpdate) {
@@ -684,7 +683,7 @@ function App() {
   }, [notesBooting, selectedNoteId]);
 
   useEffect(() => {
-    if (!settingsOpen && !settings.showMemoryInTitlebar && !embedded.experiment) return;
+    if (!settingsOpen && !settings.showMemoryInTitlebar) return;
     let alive = true;
     let timer: number | undefined;
     const refresh = async () => {
@@ -702,7 +701,7 @@ function App() {
       alive = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [settingsOpen, settings.showMemoryInTitlebar, embedded.experiment]);
+  }, [settingsOpen, settings.showMemoryInTitlebar]);
 
   useEffect(() => {
     const theme = appUiSpec.theme;
@@ -902,8 +901,7 @@ function App() {
         spec={appUiSpec}
         messages={messages}
         activeModule={embedded.active ?? (playerOpen ? "player" : "notes")}
-        modulesDisabled={embedded.busy || embedded.experiment === null}
-        experimental={embedded.experiment === true}
+        modulesDisabled={embedded.busy}
         bodyContent={
           <>
             {notesBodyContent}
@@ -916,9 +914,9 @@ function App() {
             open={settingsOpen}
             messages={messages}
             version={appVersion}
-            updateStatus={embedded.experiment ? "单窗口实验版：独立测试数据，正式更新已禁用" : updateStatus}
+            updateStatus={updateStatus}
             updateActionLabel={availableUpdate ? messages.updateInstallButton : messages.updateCheckButton}
-            updateActionDisabled={updateBusy || embedded.experiment === true}
+            updateActionDisabled={updateBusy}
             language={settings.language}
             showNoteTime={settings.showNoteTime}
             showMemoryInTitlebar={settings.showMemoryInTitlebar}
@@ -952,7 +950,7 @@ function App() {
             onClose={() => setSettingsOpen(false)}
           />
         }
-        showMemory={settings.showMemoryInTitlebar || embedded.experiment === true}
+        showMemory={settings.showMemoryInTitlebar}
         memoryBytes={resourceUsage?.totalMemoryBytes ?? null}
         processCount={resourceUsage?.totalProcesses ?? null}
         onSelectModule={(moduleId) => {

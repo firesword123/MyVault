@@ -1,7 +1,7 @@
 //! Native child WebViews. Each releasable module owns a different WebView2 UDF;
 //! closing a child releases its controller, renderer group, and profile resources.
 use serde::Deserialize;
-use std::{collections::HashMap, fs::OpenOptions, io::Write, path::PathBuf};
+use std::{collections::HashMap, path::PathBuf};
 use tauri::{
     async_runtime::Mutex, webview::WebviewBuilder, AppHandle, LogicalPosition, LogicalSize,
     Manager, Rect, State, Webview, WebviewUrl,
@@ -11,26 +11,16 @@ pub(crate) struct EmbeddedModules {
     active: Mutex<Option<String>>,
     guards: Mutex<HashMap<String, String>>,
     webview_root: PathBuf,
-    lifecycle_log: Option<PathBuf>,
 }
 
 impl EmbeddedModules {
-    pub(crate) fn new(webview_root: PathBuf, lifecycle_log: Option<PathBuf>) -> Self {
+    pub(crate) fn new(webview_root: PathBuf) -> Self {
         Self {
             active: Mutex::new(None),
             guards: Mutex::new(HashMap::new()),
             webview_root,
-            lifecycle_log,
         }
     }
-}
-
-pub(crate) fn experiment_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace directory")
-        .join(".test-data")
-        .join("single-window")
 }
 
 fn module_label(module: &str) -> Result<&'static str, String> {
@@ -81,21 +71,6 @@ impl ModuleBounds {
     }
 }
 
-fn log_lifecycle(state: &EmbeddedModules, action: &str, module: &str) {
-    if let Some(path) = &state.lifecycle_log {
-        // Test-only append log. Never trim working sets here: lifecycle tests
-        // must observe actual WebView release rather than page-file movement.
-        if let Ok(mut log) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(
-                log,
-                "{} pid={} {action} {module}",
-                crate::core::now_ts(),
-                std::process::id()
-            );
-        }
-    }
-}
-
 #[tauri::command]
 pub(crate) async fn switch_embedded_module(
     app: AppHandle,
@@ -137,7 +112,6 @@ pub(crate) async fn switch_embedded_module(
             .await
             .map_err(|e| e.to_string())??;
         }
-        log_lifecycle(&state, "closed", previous);
         state.guards.lock().await.remove(module_label(previous)?);
     }
     *active = None;
@@ -146,16 +120,12 @@ pub(crate) async fn switch_embedded_module(
         let data_directory = state.webview_root.join(&module);
         std::fs::create_dir_all(&data_directory).map_err(|e| e.to_string())?;
         let window = app.get_window("main").ok_or("main window is unavailable")?;
-        let mut builder = WebviewBuilder::new(
+        let builder = WebviewBuilder::new(
             label,
             WebviewUrl::App(format!("{module}.html?embedded=1").into()),
         )
         .data_directory(data_directory)
         .disable_drag_drop_handler();
-        if std::env::var_os("MYVAULT_WEBVIEW_TEST_DEBUG").is_some() {
-            let port = if module == "asmr" { 9331 } else { 9332 };
-            builder = builder.additional_browser_args(&format!("--remote-debugging-port={port}"));
-        }
         let view = window
             .add_child(
                 builder,
@@ -165,7 +135,6 @@ pub(crate) async fn switch_embedded_module(
             .map_err(|e| format!("failed to create {module} WebView: {e}"))?;
         *active = Some(module.clone());
         let _ = view.set_focus();
-        log_lifecycle(&state, "opened", &module);
     } else {
         let _ = caller.set_focus();
     }

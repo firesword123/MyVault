@@ -3,7 +3,6 @@ use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::OnceLock,
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
@@ -13,8 +12,6 @@ pub(crate) const DATA_SCHEMA_VERSION: u32 = 2;
 pub(crate) const DATA_ROOT_NAME: &str = "MyVaultData";
 pub(crate) const ROUTE_FILE_NAME: &str = "myvault.data-route.json";
 pub(crate) const DATA_ROOT_ENV: &str = "MYVAULT_DATA_ROOT";
-
-static DATA_ROOT_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,9 +66,6 @@ fn resolve_route_path(executable_dir: &Path, value: &str) -> Result<PathBuf, Str
 }
 
 pub(crate) fn data_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(path) = DATA_ROOT_OVERRIDE.get() {
-        return Ok(path.clone());
-    }
     if let Some(path) = std::env::var_os(DATA_ROOT_ENV).filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);
         if !path.is_absolute() {
@@ -98,15 +92,6 @@ pub(crate) fn data_root_dir(app: &AppHandle) -> Result<PathBuf, String> {
             .unwrap_or(&executable_dir)
             .join(DATA_ROOT_NAME))
     }
-}
-
-pub(crate) fn set_data_root_override(path: PathBuf) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("data root must be absolute".to_string());
-    }
-    DATA_ROOT_OVERRIDE
-        .set(path)
-        .map_err(|_| "data root is already configured".to_string())
 }
 
 pub(crate) fn manifest_path(root: &Path) -> PathBuf {

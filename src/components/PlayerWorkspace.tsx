@@ -153,11 +153,7 @@ export function PlayerWorkspace({ active, onBack }: PlayerWorkspaceProps) {
     setSubtitles([]);
     setIsPlaying(false);
     setErrorMessage("");
-    void invoke("clear_player_queue").finally(() => {
-      window.setTimeout(() => {
-        void invoke("trim_player_memory");
-      }, 250);
-    });
+    void invoke("clear_player_queue");
   }
 
   function togglePlayback() {

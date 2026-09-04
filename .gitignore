@@ -11,13 +11,12 @@ node_modules
 dist
 dist-ssr
 *.local
-.cargo-target
 src-tauri/target
 .dev-data
-.test-data
 updater.key
 updater.password
 .release-recycle/
+/trash/
 
 # Editor directories and files
 .vscode/*

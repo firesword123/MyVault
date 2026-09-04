@@ -1,15 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 use std::{path::Path, sync::Mutex};
-use sysinfo::{get_current_pid, System};
 use tauri::{AppHandle, Emitter, Manager, State};
-use windows_sys::Win32::{
-    Foundation::CloseHandle,
-    System::{
-        ProcessStatus::K32EmptyWorkingSet,
-        Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_SET_QUOTA},
-    },
-};
 
 const MAX_SUBTITLE_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -173,57 +165,6 @@ pub(crate) fn read_player_subtitle(
         return Err("subtitle exceeds the 16 MiB limit".to_string());
     }
     crate::core::read_utf8_file(&subtitle)
-}
-
-fn is_descendant_process(system: &System, pid: sysinfo::Pid, ancestor: sysinfo::Pid) -> bool {
-    let mut current = Some(pid);
-    while let Some(current_pid) = current {
-        if current_pid == ancestor {
-            return true;
-        }
-        current = system
-            .process(current_pid)
-            .and_then(|process| process.parent());
-    }
-    false
-}
-
-#[tauri::command]
-pub(crate) fn trim_player_memory(app: AppHandle) -> Result<u32, String> {
-    if app.state::<crate::ExperimentMode>().0 {
-        return Ok(0); // Don't disguise retained memory by paging it out in the experiment.
-    }
-    let mut system = System::new_all();
-    system.refresh_processes();
-    let current_pid =
-        get_current_pid().map_err(|error| format!("failed to resolve MyVault pid: {error}"))?;
-    let mut targets = vec![current_pid];
-    targets.extend(system.processes().iter().filter_map(|(pid, process)| {
-        let name = process.name().to_ascii_lowercase();
-        (name.contains("msedgewebview2") && is_descendant_process(&system, *pid, current_pid))
-            .then_some(*pid)
-    }));
-
-    let mut trimmed = 0_u32;
-    for pid in targets {
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_INFORMATION | PROCESS_SET_QUOTA,
-                0,
-                pid.as_u32(),
-            )
-        };
-        if handle.is_null() {
-            continue;
-        }
-        if unsafe { K32EmptyWorkingSet(handle) } != 0 {
-            trimmed += 1;
-        }
-        unsafe {
-            CloseHandle(handle);
-        }
-    }
-    Ok(trimmed)
 }
 
 pub(crate) fn replace_queue(app: &AppHandle, payload: Value) -> Result<(), String> {

@@ -11,20 +11,9 @@ function contentBounds() {
 }
 
 export function useEmbeddedModules() {
-  const [experiment, setExperiment] = useState<boolean | null>(null);
   const [active, setActive] = useState<EmbeddedModule | null>(null);
   const [busy, setBusy] = useState(false);
   const switching = useRef(false);
-
-  useEffect(() => {
-    let alive = true;
-    void invoke<boolean>("is_experiment_build").then((value) => {
-      if (alive) setExperiment(value);
-    }).catch((error) => {
-      if (alive) window.alert(`无法读取应用运行模式：${String(error)}`);
-    });
-    return () => { alive = false; };
-  }, []);
 
   const select = useCallback(async (module: EmbeddedModule | null) => {
     if (switching.current) return false;
@@ -72,5 +61,5 @@ export function useEmbeddedModules() {
     };
   }, []);
 
-  return { experiment, active, busy, select };
+  return { active, busy, select };
 }
