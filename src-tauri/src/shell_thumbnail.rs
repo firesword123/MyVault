@@ -12,7 +12,10 @@ use windows::{
     core::{Interface, PCWSTR},
     Win32::{
         Foundation::SIZE,
-        Graphics::Gdi::{DeleteObject, GetBitmapBits, GetObjectW, BITMAP, HBITMAP, HGDIOBJ},
+        Graphics::Gdi::{
+            CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetObjectW, BITMAP, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
+        },
         System::Com::{CoInitializeEx, CoUninitialize, IBindCtx, COINIT_APARTMENTTHREADED},
         UI::Shell::{
             IShellItem, IShellItemImageFactory, SHCreateItemFromParsingName, SIIGBF_RESIZETOFIT,
@@ -32,11 +35,20 @@ struct Job {
 }
 
 struct OwnedBitmap(HBITMAP);
+struct OwnedDc(HDC);
 
 impl Drop for OwnedBitmap {
     fn drop(&mut self) {
         unsafe {
             let _ = DeleteObject(HGDIOBJ::from(self.0));
+        }
+    }
+}
+
+impl Drop for OwnedDc {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DeleteDC(self.0);
         }
     }
 }
@@ -68,6 +80,10 @@ fn write_u32(buffer: &mut [u8], offset: usize, value: u32) {
     buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+fn write_i32(buffer: &mut [u8], offset: usize, value: i32) {
+    buffer[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+
 fn bitmap_to_bmp(bitmap: HBITMAP) -> Result<Vec<u8>, String> {
     let bitmap = OwnedBitmap(bitmap);
     let mut info = BITMAP::default();
@@ -86,8 +102,12 @@ fn bitmap_to_bmp(bitmap: HBITMAP) -> Result<Vec<u8>, String> {
     {
         return Err("Shell returned an unsupported thumbnail bitmap".into());
     }
+    let width =
+        u32::try_from(info.bmWidth).map_err(|_| "Shell thumbnail width is invalid".to_string())?;
     let height = info.bmHeight.unsigned_abs();
-    let stride = info.bmWidthBytes.unsigned_abs();
+    let stride = width
+        .checked_mul(4)
+        .ok_or_else(|| "Shell thumbnail is too large".to_string())?;
     let pixel_bytes = stride
         .checked_mul(height)
         .ok_or_else(|| "Shell thumbnail is too large".to_string())?;
@@ -99,15 +119,47 @@ fn bitmap_to_bmp(bitmap: HBITMAP) -> Result<Vec<u8>, String> {
     write_u32(&mut body, 2, file_bytes);
     write_u32(&mut body, 10, 54);
     write_u32(&mut body, 14, 40);
-    write_u32(&mut body, 18, info.bmWidth as u32);
-    write_u32(&mut body, 22, info.bmHeight as u32);
+    write_i32(&mut body, 18, info.bmWidth);
+    // Request and describe a top-down DIB. GetBitmapBits exposed the Shell
+    // bitmap's storage order without preserving its orientation metadata,
+    // which made a positive BMP height flip every thumbnail vertically.
+    let top_down_height =
+        -i32::try_from(height).map_err(|_| "Shell thumbnail height is invalid".to_string())?;
+    write_i32(&mut body, 22, top_down_height);
     write_u16(&mut body, 26, 1);
     write_u16(&mut body, 28, 32);
     write_u32(&mut body, 34, pixel_bytes);
-    let copied =
-        unsafe { GetBitmapBits(bitmap.0, pixel_bytes as i32, body[54..].as_mut_ptr().cast()) };
-    if copied != pixel_bytes as i32 {
-        return Err("failed to copy the Shell thumbnail bitmap".into());
+    let mut bitmap_info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: info.bmWidth,
+            biHeight: top_down_height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            biSizeImage: pixel_bytes,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let dc_handle = unsafe { CreateCompatibleDC(None) };
+    if dc_handle.0.is_null() {
+        return Err("failed to create a GDI thumbnail context".into());
+    }
+    let dc = OwnedDc(dc_handle);
+    let copied_lines = unsafe {
+        GetDIBits(
+            dc.0,
+            bitmap.0,
+            0,
+            height,
+            Some(body[54..].as_mut_ptr().cast()),
+            &mut bitmap_info,
+            DIB_RGB_COLORS,
+        )
+    };
+    if copied_lines != height as i32 {
+        return Err("failed to copy the Shell thumbnail pixels".into());
     }
     Ok(body)
 }
@@ -231,23 +283,58 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    #[test]
-    fn reads_a_thumbnail_through_the_windows_shell() {
-        let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/128x128.png");
-        let body = thread::spawn(move || {
+    fn load_on_shell_thread(path: PathBuf) -> Vec<u8> {
+        thread::spawn(move || {
             let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
             initialized
                 .ok()
                 .expect("fresh Shell thumbnail thread should initialize COM");
-            let result = load_shell_thumbnail(&icon);
-            let _ = initialized;
+            let result = load_shell_thumbnail(&path);
             unsafe { CoUninitialize() };
             result
         })
         .join()
         .unwrap()
-        .expect("Windows Shell should thumbnail PNG files");
+        .expect("Windows Shell should thumbnail the image")
+    }
+
+    #[test]
+    fn reads_a_thumbnail_through_the_windows_shell() {
+        let icon = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("icons/128x128.png");
+        let body = load_on_shell_thread(icon);
         assert_eq!(&body[..2], b"BM");
         assert!(body.len() > 54);
+    }
+
+    #[test]
+    fn preserves_top_bottom_and_left_right_orientation() {
+        let root =
+            std::env::temp_dir().join(format!("myvault-shell-thumb-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("orientation.png");
+        let mut fixture = image::RgbImage::new(512, 384);
+        for (x, y, pixel) in fixture.enumerate_pixels_mut() {
+            *pixel = match (x < 256, y < 192) {
+                (true, true) => image::Rgb([255, 0, 0]),
+                (false, true) => image::Rgb([0, 255, 0]),
+                (true, false) => image::Rgb([0, 0, 255]),
+                (false, false) => image::Rgb([255, 255, 0]),
+            };
+        }
+        fixture.save(&path).unwrap();
+
+        let body = load_on_shell_thread(path);
+        let decoded = image::load_from_memory(&body).unwrap().to_rgb8();
+        let (width, height) = decoded.dimensions();
+        let top_left = decoded.get_pixel(width / 4, height / 4).0;
+        let top_right = decoded.get_pixel(width * 3 / 4, height / 4).0;
+        let bottom_left = decoded.get_pixel(width / 4, height * 3 / 4).0;
+        let bottom_right = decoded.get_pixel(width * 3 / 4, height * 3 / 4).0;
+
+        assert!(top_left[0] > 200 && top_left[1] < 40 && top_left[2] < 40);
+        assert!(top_right[0] < 40 && top_right[1] > 200 && top_right[2] < 40);
+        assert!(bottom_left[0] < 40 && bottom_left[1] < 40 && bottom_left[2] > 200);
+        assert!(bottom_right[0] > 200 && bottom_right[1] > 200 && bottom_right[2] < 40);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
