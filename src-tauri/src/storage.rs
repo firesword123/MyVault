@@ -120,12 +120,9 @@ fn create_layout(root: &Path) -> Result<(), String> {
         "Notes/_Trash",
         "DL_ASMR",
         "Gallery",
-        "Attachments",
         "_MyVault/Importing",
         "_MyVault/Backups",
         "_MyVault/Migrations",
-        "_MyVault/MigrationReports",
-        "_MyVault/RepairReports",
     ] {
         fs::create_dir_all(root.join(relative))
             .map_err(|error| format!("failed to create data directory {relative}: {error}"))?;
@@ -213,7 +210,8 @@ mod tests {
         assert!(root.join("Notes/_Inbox").is_dir());
         assert!(root.join("DL_ASMR").is_dir());
         assert!(root.join("Gallery").is_dir());
-        assert!(root.join("_MyVault/RepairReports").is_dir());
+        assert!(!root.join("_MyVault/MigrationReports").exists());
+        assert!(!root.join("_MyVault/RepairReports").exists());
         let _ = fs::remove_dir_all(root);
     }
 

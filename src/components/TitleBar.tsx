@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Maximize2, Minus, Settings, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Minus, Moon, Settings, Square, Sun, X } from "lucide-react";
+import appIconUrl from "../../src-tauri/icons/128x128.png";
 import type { LocaleMessages } from "../i18n";
 import type { ModuleItem } from "../ui-spec";
 
@@ -32,6 +34,13 @@ export function TitleBar({
   memoryBytes = null,
   processCount = null,
 }: TitleBarProps) {
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    try {
+      return window.localStorage.getItem("myvault-theme") === "dark" ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
   const moduleLabels: Record<string, string> = {
     notes: messages.moduleNotesLabel,
     asmr: messages.moduleAsmrLabel,
@@ -39,9 +48,21 @@ export function TitleBar({
     player: messages.modulePlayerLabel,
   };
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      window.localStorage.setItem("myvault-theme", theme);
+    } catch {
+      // Theme persistence is optional when storage is unavailable.
+    }
+  }, [theme]);
+
   return (
     <header className="titlebar">
       <div className="titlebar-brand">
+        <span className="titlebar-mark" aria-hidden="true">
+          <img src={appIconUrl} alt="" />
+        </span>
         <span>{brand}</span>
       </div>
 
@@ -76,6 +97,15 @@ export function TitleBar({
       </div>
 
       <div className="window-controls">
+        <button
+          type="button"
+          className="titlebar-theme-toggle"
+          aria-label={messages.themeToggleButton}
+          title={messages.themeToggleButton}
+          onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+        >
+          {theme === "dark" ? <Sun size={16} strokeWidth={1.8} /> : <Moon size={16} strokeWidth={1.8} />}
+        </button>
         {showSettings ? (
           <button type="button" aria-label={messages.settingsTitle} title={messages.settingsTitle} onClick={onOpenSettings}>
             <Settings size={16} strokeWidth={1.75} />
@@ -95,7 +125,7 @@ export function TitleBar({
           title="Maximize"
           onClick={() => void invoke("toggle_maximize_window")}
         >
-          <Maximize2 size={15} strokeWidth={1.75} />
+          <Square size={13} strokeWidth={1.8} />
         </button>
         <button
           type="button"

@@ -349,3 +349,125 @@
     grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
   }
 }
+
+/* Shared MyVault visual system */
+.gallery-workspace {
+  padding: 0 0 0 10px;
+  background: var(--bg-shell);
+}
+
+.gallery-toolbar {
+  min-height: 68px;
+  padding: 12px 18px;
+  border: 1px solid var(--border-panel);
+  border-right: 0;
+  border-bottom-color: var(--border-panel);
+  border-radius: var(--panel-radius) 0 0;
+  background: var(--bg-panel);
+}
+
+.gallery-heading-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--control-radius);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.gallery-primary-button,
+.gallery-secondary-button,
+.gallery-preview-explorer-button {
+  border-radius: var(--control-radius);
+}
+
+.gallery-primary-button {
+  background: var(--accent-strong);
+  box-shadow: 0 2px 8px rgba(107, 92, 231, 0.22);
+}
+
+.gallery-primary-button:hover {
+  background: var(--accent-hover);
+}
+
+.gallery-secondary-button {
+  border-color: var(--border-panel);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+}
+
+.gallery-secondary-button:hover {
+  color: var(--text-primary);
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
+}
+
+.gallery-content {
+  border-left: 1px solid var(--border-panel);
+  background: var(--editor-bg);
+}
+
+.gallery-grid {
+  gap: 12px;
+}
+
+.gallery-card {
+  border-color: var(--border-panel);
+  border-radius: 12px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+
+.gallery-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-panel);
+}
+
+.gallery-thumbnail-frame {
+  background: var(--bg-hover);
+}
+
+.gallery-card-name,
+.gallery-empty h2 {
+  color: var(--text-primary);
+}
+
+.gallery-card-path,
+.gallery-empty,
+.gallery-storage-path,
+.gallery-pagination > div {
+  color: var(--text-muted);
+}
+
+.gallery-loading {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--editor-bg) 78%, transparent);
+}
+
+.gallery-pagination {
+  border: 1px solid var(--border-panel);
+  border-top-color: var(--border-panel);
+  border-right: 0;
+  border-bottom: 0;
+  background: var(--bg-panel);
+}
+
+.gallery-pagination button {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.gallery-pagination button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-active);
+}
+
+@media (max-width: 760px) {
+  .gallery-workspace {
+    padding-left: 0;
+  }
+
+  .gallery-toolbar {
+    border-radius: 0;
+  }
+}

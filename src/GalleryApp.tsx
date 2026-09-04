@@ -2,10 +2,12 @@ import { GalleryWorkspace } from "./components/GalleryWorkspace";
 import { TitleBar } from "./components/TitleBar";
 import { resolveMessages } from "./i18n";
 import { isEmbeddedModule } from "./useEmbeddedGuard";
+import { useStoredTheme } from "./useStoredTheme";
 import "./styles/global.css";
 import "./styles/gallery.css";
 
 export function GalleryApp() {
+  useStoredTheme();
   const messages = resolveMessages("zh-CN");
 
   return (

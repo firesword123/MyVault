@@ -41,7 +41,9 @@ Original files load only after explicit preview. Large-original preview peaks ar
 
 ## Data and profile placement
 
-`MyVaultData` contains user-owned notes, attachments, DL_ASMR works, Gallery originals, settings, manifests and migration reports. It does not contain WebView2 profiles or newly generated Gallery thumbnails.
+`MyVaultData` contains user-owned notes, DL_ASMR works, Gallery originals, settings, manifests and migration reports. It does not contain WebView2 profiles or newly generated Gallery thumbnails.
+
+Notes are versioned JSON block documents. The initial format supports one `richText` block per note; new block types can extend the ordered `blocks` array without changing folder ownership.
 
 WebView2 profiles live below the application's local-data directory and remain separate from user-owned Vault data.
 

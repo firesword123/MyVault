@@ -23,10 +23,6 @@ pub(crate) struct AppSettings {
     language: String,
     #[serde(default = "default_show_note_time")]
     show_note_time: bool,
-    #[serde(default = "default_color_presets")]
-    color_presets: Vec<String>,
-    #[serde(default = "default_color_preset_count")]
-    color_preset_count: usize,
     #[serde(default = "default_close_behavior")]
     pub(crate) close_behavior: String,
     #[serde(default)]
@@ -75,19 +71,6 @@ fn default_show_note_time() -> bool {
     false
 }
 
-fn default_color_presets() -> Vec<String> {
-    vec![
-        "#ef4444".to_string(),
-        "#eab308".to_string(),
-        "#3b82f6".to_string(),
-        "#22c55e".to_string(),
-    ]
-}
-
-fn default_color_preset_count() -> usize {
-    4
-}
-
 pub(crate) fn default_close_behavior() -> String {
     "quit".to_string()
 }
@@ -98,18 +81,10 @@ fn default_notes_state() -> NotesWindowState {
     }
 }
 
-fn normalized_color_presets() -> Vec<String> {
-    let mut presets = default_color_presets();
-    presets.resize(default_color_preset_count(), "#3b82f6".to_string());
-    presets
-}
-
 fn default_settings() -> AppSettings {
     AppSettings {
         language: default_language(),
         show_note_time: default_show_note_time(),
-        color_presets: normalized_color_presets(),
-        color_preset_count: default_color_preset_count(),
         close_behavior: default_close_behavior(),
         http_proxy: String::new(),
         https_proxy: String::new(),
@@ -167,10 +142,6 @@ pub(crate) fn vault_dir(app: &AppHandle) -> Result<PathBuf, String> {
 
 pub(crate) fn notes_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_root_dir(app)?.join("Notes"))
-}
-
-fn images_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(data_root_dir(app)?.join("Attachments"))
 }
 
 pub(crate) fn asmr_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -247,7 +218,6 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     let root = crate::storage::prepare_data_root(app)?;
     let vault = vault_dir(app)?;
     let notes = notes_dir(app)?;
-    let images = images_dir(app)?;
     let drafts = drafts_dir(app)?;
     let inbox = inbox_dir(app)?;
     let trash = trash_dir(app)?;
@@ -256,7 +226,6 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     fs::create_dir_all(&root).map_err(|error| format!("failed to create app root: {error}"))?;
     fs::create_dir_all(&vault).map_err(|error| format!("failed to create vault dir: {error}"))?;
     fs::create_dir_all(&notes).map_err(|error| format!("failed to create notes dir: {error}"))?;
-    fs::create_dir_all(&images).map_err(|error| format!("failed to create images dir: {error}"))?;
     fs::create_dir_all(&drafts).map_err(|error| format!("failed to create drafts dir: {error}"))?;
     fs::create_dir_all(&inbox).map_err(|error| format!("failed to create inbox dir: {error}"))?;
     fs::create_dir_all(&trash).map_err(|error| format!("failed to create trash dir: {error}"))?;
@@ -299,19 +268,11 @@ pub(crate) fn save_settings_file(
     settings: &AppSettings,
 ) -> Result<AppSettings, String> {
     let mut normalized = settings.clone();
-    normalized.color_preset_count = normalized.color_preset_count.clamp(1, 8);
     normalized.close_behavior = match normalized.close_behavior.as_str() {
         "tray" => "tray".to_string(),
         _ => "quit".to_string(),
     };
 
-    let mut presets = normalized.color_presets;
-    presets.retain(|value| is_valid_hex_color(value));
-    if presets.is_empty() {
-        presets = normalized_color_presets();
-    }
-    presets.resize(normalized.color_preset_count, "#3b82f6".to_string());
-    normalized.color_presets = presets;
     normalized.http_proxy = normalize_proxy_value(&normalized.http_proxy);
     normalized.https_proxy = normalize_proxy_value(&normalized.https_proxy);
     normalized.all_proxy = normalize_proxy_value(&normalized.all_proxy);
@@ -382,11 +343,6 @@ pub(crate) fn atomic_write_utf8_file(path: &Path, content: &str) -> Result<(), S
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
     fs::rename(&tmp_path, path).map_err(|error| error.to_string())
-}
-
-fn is_valid_hex_color(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[tauri::command]

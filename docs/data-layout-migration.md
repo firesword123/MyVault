@@ -9,27 +9,27 @@ Portable root/
 │  └─ myvault.data-route.json       # optional path override only
 └─ MyVaultData/
    ├─ Notes/
-   │  ├─ _Drafts/
-   │  ├─ _Inbox/
-   │  ├─ _Trash/
-   │  └─ <user folders>/
+   │  ├─ _Drafts/<note-id>.json
+   │  ├─ _Inbox/<note-id>.json
+   │  ├─ _Trash/<note-id>.json
+   │  └─ <user folders>/<note-id>.json
    ├─ DL_ASMR/
    │  ├─ _Library.json
    │  └─ RJxxxxxx/
    │     ├─ _Work.json
    │     └─ <imported files and folders>/
-   ├─ Attachments/
    ├─ Gallery/
    └─ _MyVault/
       ├─ Manifest.json
       ├─ Settings.json
       ├─ Importing/
       ├─ Backups/
-      ├─ Migrations/
-      └─ MigrationReports/
+      └─ Migrations/
 ```
 
 All paths persisted in `_Library.json` are relative to `MyVaultData`. A DL_ASMR `coverPath` points directly to an existing image inside its RJ work directory; MyVault does not create a cover copy or thumbnail. Gallery also keeps only original user files: its grid uses the Windows Shell thumbnail cache and does not create `_MyVault/Cache/Gallery` derivatives. Absolute media paths are created only in command responses while the application is running.
+
+Each note is a UTF-8 JSON block document with `formatVersion: 1`. Its `blocks` array is ordered and currently contains exactly one `richText` block whose `html` field stores the editor content. The application does not read or migrate previous `.md` note documents. An explicit offline migration tool is available at `tool/migrate-notes-v1-to-json.ps1`.
 
 `myvault.data-route.json` contains no application state:
 
@@ -54,7 +54,7 @@ Migration runs only when all of these conditions hold:
 The migration process:
 
 1. Creates `MyVaultData.migrating-<UUID>` beside the final root.
-2. Copies settings, notes, attachments and RJ resources. Every copy is checked against the source byte length.
+2. Copies settings, notes and RJ resources. Every copy is checked against the source byte length.
 3. Maps `drafts`, `inbox`, and `trash` to `_Drafts`, `_Inbox`, and `_Trash`.
 4. Renames the data domain from `asmr` to `DL_ASMR`, promotes the old `files` contents into each RJ directory, and writes `_Work.json`.
 5. Rewrites `workDir`, `filesDir`, cover and thumbnail paths as schema-2 relative paths.

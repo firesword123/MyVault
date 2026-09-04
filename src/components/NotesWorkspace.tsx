@@ -1,23 +1,23 @@
 import { type ClipboardEvent, type FormEvent, useEffect, useRef, useState } from "react";
 import {
-  Bold,
   Check,
+  ChevronRight,
   Copy,
   Folder,
   FolderOpen,
   FolderPlus,
   MoreHorizontal,
-  Palette,
   Pause,
   PenLine,
   Pencil,
+  Search,
   Settings,
   Trash2,
   XCircle,
 } from "lucide-react";
 import type { NoteDetail, NoteSummary } from "../types";
 import type { LocaleMessages } from "../i18n";
-import { formatTimestamp } from "../utils";
+import { formatClockTime, formatRelativeTimestamp, formatTimestamp, noteRichText } from "../utils";
 
 type NotesListPanelProps = {
   messages: LocaleMessages;
@@ -90,8 +90,6 @@ function isSafeUrl(value: string) {
 
 function sanitizeStyleAttribute(value: string) {
   const allowedProperties = new Set([
-    "color",
-    "background-color",
     "font-weight",
     "font-style",
     "text-decoration",
@@ -296,14 +294,22 @@ export function NotesListPanel({
   openFolders,
   onToggleFolder,
 }: NotesListPanelProps) {
-  const groups = groupNotes(messages, folders, filteredNotes).filter((group) => group.key !== "drafts");
+  const groups = groupNotes(messages, folders, filteredNotes);
   const noteIndex = new Map(filteredNotes.map((note) => [note.id, note]));
   const mainGroups = groups.filter((group) => group.key !== "trash");
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
   const [activeMenuFolder, setActiveMenuFolder] = useState<string | null>(null);
   const [dragTargetFolder, setDragTargetFolder] = useState<string | null>(null);
   const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
-  const draggingNoteIdRef = useRef<string | null>(null);
+  const dragTargetFolderRef = useRef<string | null>(null);
+  const pointerDragRef = useRef<{
+    noteId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    started: boolean;
+  } | null>(null);
+  const suppressNoteClickRef = useRef<string | null>(null);
   const [noteContextMenu, setNoteContextMenu] = useState<{
     note: NoteSummary;
     x: number;
@@ -311,6 +317,7 @@ export function NotesListPanel({
   } | null>(null);
   const menuShellRef = useRef<HTMLDivElement | null>(null);
   const noteContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -325,6 +332,24 @@ export function NotesListPanel({
     document.addEventListener("mousedown", handlePointerDown);
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, []);
+
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      } else if (key === "n") {
+        event.preventDefault();
+        onCreateNote();
+      }
+    }
+
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [onCreateNote]);
 
   function submitFolderModal() {
     if (!folderModal) return;
@@ -345,6 +370,7 @@ export function NotesListPanel({
     const draggedNote = noteIndex.get(noteId);
     if (!draggedNote || draggedNote.folderPath === folderPath) {
       setDragTargetFolder(null);
+      dragTargetFolderRef.current = null;
       setDraggingNoteId(null);
       return;
     }
@@ -355,8 +381,52 @@ export function NotesListPanel({
       onMoveNoteToFolder(noteId, folderPath);
     }
     setDragTargetFolder(null);
+    dragTargetFolderRef.current = null;
     setDraggingNoteId(null);
-    draggingNoteIdRef.current = null;
+  }
+
+  function resetPointerDrag() {
+    pointerDragRef.current = null;
+    dragTargetFolderRef.current = null;
+    setDragTargetFolder(null);
+    setDraggingNoteId(null);
+  }
+
+  function updatePointerDrag(clientX: number, clientY: number) {
+    const drag = pointerDragRef.current;
+    if (!drag) return;
+    if (!drag.started && Math.hypot(clientX - drag.startX, clientY - drag.startY) >= 5) {
+      drag.started = true;
+      setDraggingNoteId(drag.noteId);
+    }
+    if (!drag.started) return;
+
+    const target = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-folder-drop]")
+      ?.dataset.folderDrop;
+    const draggedNote = noteIndex.get(drag.noteId);
+    const nextTarget = target && target !== draggedNote?.folderPath ? target : null;
+    dragTargetFolderRef.current = nextTarget;
+    setDragTargetFolder(nextTarget);
+  }
+
+  function finishPointerDrag(noteId: string) {
+    const drag = pointerDragRef.current;
+    if (!drag?.started) {
+      resetPointerDrag();
+      return;
+    }
+
+    suppressNoteClickRef.current = noteId;
+    window.setTimeout(() => {
+      if (suppressNoteClickRef.current === noteId) suppressNoteClickRef.current = null;
+    }, 0);
+    const target = dragTargetFolderRef.current;
+    resetPointerDrag();
+    if (target) {
+      handleFolderDrop(noteId, target);
+    }
   }
 
   function renderGroup(group: NoteGroup) {
@@ -364,37 +434,20 @@ export function NotesListPanel({
       <section
         key={group.key}
         className="note-group"
+        data-folder-drop={group.key}
       >
-        <div
-          className="folder-row"
-          onDragOver={(event) => {
-            const draggedNoteId =
-              event.dataTransfer.getData("text/plain") || draggingNoteIdRef.current || draggingNoteId;
-            if (!draggedNoteId) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            setDragTargetFolder(group.key);
-          }}
-          onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setDragTargetFolder((current) => (current === group.key ? null : current));
-            }
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const noteId = event.dataTransfer.getData("text/plain");
-            if (noteId) {
-              handleFolderDrop(noteId, group.key);
-            }
-          }}
-        >
+        <div className="folder-row">
           <button
             type="button"
             className={`note-group-header ${activeFolderPath === group.key ? "is-active" : ""} ${
               dragTargetFolder === group.key ? "is-drop-target" : ""
             }`}
             onClick={() => onToggleFolder(group.key)}
+            aria-expanded={openFolders[group.key] !== false}
           >
+            <span className={`folder-chevron ${openFolders[group.key] !== false ? "is-open" : ""}`}>
+              <ChevronRight size={14} strokeWidth={2.1} />
+            </span>
             <span className="folder-glyph">
               {openFolders[group.key] !== false ? (
                 <FolderOpen size={16} strokeWidth={1.8} />
@@ -402,7 +455,8 @@ export function NotesListPanel({
                 <Folder size={16} strokeWidth={1.8} />
               )}
             </span>
-            <span>{group.label}</span>
+            <span className="folder-label">{group.label}</span>
+            <span className="folder-count">{group.notes.length}</span>
           </button>
 
           {group.allowManage ? (
@@ -470,13 +524,18 @@ export function NotesListPanel({
             <button
               key={note.id}
               type="button"
-              draggable={!note.isTrashed}
               className={`note-row ${selectedNoteId === note.id ? "is-selected" : ""} ${
                 draggingNoteId === note.id ? "is-dragging" : ""
               } ${
                 note.isTrashed ? "is-trashed" : ""
               }`}
-              onClick={() => onSelectNote(note.id)}
+              onClick={() => {
+                if (suppressNoteClickRef.current === note.id) {
+                  suppressNoteClickRef.current = null;
+                  return;
+                }
+                onSelectNote(note.id);
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 onSelectNote(note.id);
@@ -487,16 +546,31 @@ export function NotesListPanel({
                   y: nextPosition.y,
                 });
               }}
-              onDragStart={(event) => {
-                event.dataTransfer.setData("text/plain", note.id);
-                event.dataTransfer.effectAllowed = "move";
-                setDraggingNoteId(note.id);
-                draggingNoteIdRef.current = note.id;
+              onPointerDown={(event) => {
+                if (event.button !== 0 || note.isTrashed) return;
+                pointerDragRef.current = {
+                  noteId: note.id,
+                  pointerId: event.pointerId,
+                  startX: event.clientX,
+                  startY: event.clientY,
+                  started: false,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
               }}
-              onDragEnd={() => {
-                setDragTargetFolder(null);
-                setDraggingNoteId(null);
-                draggingNoteIdRef.current = null;
+              onPointerMove={(event) => {
+                if (pointerDragRef.current?.pointerId !== event.pointerId) return;
+                updatePointerDrag(event.clientX, event.clientY);
+                if (pointerDragRef.current?.started) event.preventDefault();
+              }}
+              onPointerUp={(event) => {
+                if (pointerDragRef.current?.pointerId !== event.pointerId) return;
+                if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                }
+                finishPointerDrag(note.id);
+              }}
+              onPointerCancel={(event) => {
+                if (pointerDragRef.current?.pointerId === event.pointerId) resetPointerDrag();
               }}
             >
               <div className="note-row-header">
@@ -515,34 +589,37 @@ export function NotesListPanel({
       <div className="sidebar-action-stack">
         <button
           type="button"
-          className="sidebar-action-button"
+          className="sidebar-action-button is-primary"
           onClick={onCreateNote}
           aria-label={messages.createButton}
           title={messages.createButton}
         >
           <PenLine size={17} strokeWidth={1.8} />
           <span>{messages.createButton}</span>
+          <kbd>Ctrl N</kbd>
         </button>
         <button
           type="button"
-          className="sidebar-action-button"
+          className="sidebar-action-button is-folder"
           onClick={() => setFolderModal({ mode: "create", value: "" })}
           aria-label={messages.createFolderButton}
           title={messages.createFolderButton}
         >
           <FolderPlus size={17} strokeWidth={1.8} />
-          <span>{messages.createFolderButton}</span>
         </button>
       </div>
 
-      <div className="list-toolbar sidebar-search-section">
+      <label className="list-toolbar sidebar-search-section">
+        <Search size={14} strokeWidth={2} />
         <input
+          ref={searchInputRef}
           type="search"
           value={searchText}
           placeholder={messages.searchPlaceholder}
           onChange={(event) => onSearchTextChange(event.target.value)}
         />
-      </div>
+        <kbd>Ctrl K</kbd>
+      </label>
 
       <div className="notes-tree">
         <div className="notes-list">
@@ -656,53 +733,59 @@ export function NotesListPanel({
 
 type EditorWorkspaceProps = {
   messages: LocaleMessages;
+  language: string;
   activeNote: NoteDetail | null;
-  colorPresets: string[];
   draftMoveTargets: string[];
   draftTargetFolder: string;
+  saveState: "saved" | "saving";
   onTitleChange: (value: string) => void;
   onContentChange: (value: string) => void;
   onSave: () => void;
   onDraftTargetFolderChange: (folderPath: string) => void;
   onSaveDraftToFolder: (folderPath: string) => void;
-  onClearDraft: () => void;
+  onReveal: () => void;
+  onDeleteDraft: () => void;
   onDelete: () => void;
   onRestore: () => void;
   onDeletePermanently: () => void;
-  onEmptyTrash: () => void;
   errorMessage?: string;
 };
 
 export function EditorWorkspace({
   messages,
+  language,
   activeNote,
-  colorPresets,
   draftMoveTargets,
   draftTargetFolder,
+  saveState,
   onTitleChange,
   onContentChange,
   onSave,
   onDraftTargetFolderChange,
   onSaveDraftToFolder,
-  onClearDraft,
+  onReveal,
+  onDeleteDraft,
   onDelete,
   onRestore,
   onDeletePermanently,
-  onEmptyTrash,
   errorMessage,
 }: EditorWorkspaceProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
-  const colorInputRef = useRef<HTMLInputElement | null>(null);
   const selectionRangeRef = useRef<Range | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
+  const editorMoreRef = useRef<HTMLDivElement | null>(null);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  const [editorMoreOpen, setEditorMoreOpen] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const activeContent = noteRichText(activeNote);
 
   useEffect(() => {
-    const nextContent = toEditorHtml(activeNote?.content ?? "");
+    const nextContent = toEditorHtml(activeContent);
     if (editorRef.current && editorRef.current.innerHTML !== nextContent) {
       editorRef.current.innerHTML = nextContent;
     }
-  }, [activeNote?.id, activeNote?.content]);
+    setWordCount((editorRef.current?.innerText ?? "").replace(/\s/g, "").length);
+  }, [activeNote?.id, activeContent]);
 
   useEffect(() => {
     setCopyState("idle");
@@ -713,6 +796,17 @@ export function EditorWorkspace({
       }
     };
   }, [activeNote?.id]);
+
+  useEffect(() => {
+    function closeEditorMore(event: MouseEvent) {
+      if (!editorMoreRef.current?.contains(event.target as Node)) {
+        setEditorMoreOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", closeEditorMore);
+    return () => document.removeEventListener("mousedown", closeEditorMore);
+  }, []);
 
   function emitEditorContent() {
     onContentChange(editorRef.current?.innerHTML ?? "");
@@ -752,6 +846,7 @@ export function EditorWorkspace({
 
   function handleEditorInput(_event: FormEvent<HTMLDivElement>) {
     rememberSelection();
+    setWordCount((editorRef.current?.innerText ?? "").replace(/\s/g, "").length);
     emitEditorContent();
   }
 
@@ -773,11 +868,10 @@ export function EditorWorkspace({
     emitEditorContent();
   }
 
-  function applyInlineFormat(kind: "bold" | "color", value?: string) {
+  function applyBold() {
     const range = restoreEditorRange();
     if (!range || range.collapsed) return;
-    const wrapper = kind === "bold" ? document.createElement("strong") : document.createElement("span");
-    if (kind === "color" && value) wrapper.style.color = value;
+    const wrapper = document.createElement("strong");
     wrapper.appendChild(range.extractContents());
     range.insertNode(wrapper);
     const selection = window.getSelection();
@@ -832,30 +926,117 @@ export function EditorWorkspace({
     }
   }
 
+  const folderLabel = activeNote
+    ? activeNote.folderPath === "drafts"
+      ? messages.draftsLabel
+      : activeNote.folderPath === "inbox"
+        ? messages.inboxLabel
+        : activeNote.folderPath
+    : "";
+
   return (
     <section className="editor-shell">
       {errorMessage ? <div className="error-banner">{errorMessage}</div> : null}
 
       {activeNote ? (
-        <div className="editor-panel">
-          <input
-            className="title-input"
-            value={activeNote.title}
-            disabled={activeNote.isTrashed}
-            onChange={(event) => onTitleChange(event.target.value)}
-            placeholder={messages.titlePlaceholder}
-          />
+        <>
+          <header className="editor-topbar">
+            <div className="editor-breadcrumb">
+              <Folder size={14} strokeWidth={1.8} />
+              <span>{folderLabel}</span>
+              <span aria-hidden="true">/</span>
+              <strong>{activeNote.title || messages.titlePlaceholder}</strong>
+            </div>
+            <div className="editor-top-actions">
+              <span className={`editor-save-state ${saveState === "saving" ? "is-saving" : ""}`}>
+                {saveState === "saving"
+                  ? messages.saving
+                  : `${messages.savedStatus} · ${formatClockTime(activeNote.updatedAt, language)}`}
+              </span>
+              <div className="editor-more-shell" ref={editorMoreRef}>
+                <button
+                  type="button"
+                  className="editor-more-button"
+                  aria-label={messages.folderOptionsButton}
+                  title={messages.folderOptionsButton}
+                  onClick={() => setEditorMoreOpen((current) => !current)}
+                >
+                  <MoreHorizontal size={17} strokeWidth={2} />
+                </button>
+                {editorMoreOpen ? (
+                  <div className="editor-more-menu">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void copyAllContent();
+                        setEditorMoreOpen(false);
+                      }}
+                    >
+                      {messages.copyContentButton}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onReveal();
+                        setEditorMoreOpen(false);
+                      }}
+                    >
+                      {messages.revealNoteButton}
+                    </button>
+                    {!activeNote.isTrashed ? (
+                      <button
+                        type="button"
+                        className="is-danger"
+                        onClick={() => {
+                          activeNote.folderPath === "drafts" ? onDeleteDraft() : onDelete();
+                          setEditorMoreOpen(false);
+                        }}
+                      >
+                        {messages.deleteButton}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </header>
 
-          <div
-            ref={editorRef}
-            className={`note-editor ${activeNote.isTrashed ? "is-readonly" : ""}`}
-            contentEditable={!activeNote.isTrashed}
-            suppressContentEditableWarning
-            data-placeholder={messages.editorPlaceholder}
-            onInput={handleEditorInput}
-            onPaste={handleEditorPaste}
-            onSelect={rememberSelection}
-          />
+          <div className="editor-scroll">
+            <div className="editor-panel">
+              <input
+                className="title-input"
+                value={activeNote.title}
+                disabled={activeNote.isTrashed}
+                onChange={(event) => onTitleChange(event.target.value)}
+                placeholder={messages.titlePlaceholder}
+              />
+
+              <div className="editor-meta">
+                <span className="editor-meta-chip">
+                  <Folder size={13} strokeWidth={1.8} />
+                  {folderLabel}
+                </span>
+                <span>{messages.wordCountLabel.replace("{count}", String(wordCount))}</span>
+                <span>
+                  {messages.updatedRelativeLabel.replace(
+                    "{time}",
+                    formatRelativeTimestamp(activeNote.updatedAt, language),
+                  )}
+                </span>
+              </div>
+
+              <div
+                ref={editorRef}
+                className={`note-editor ${activeNote.isTrashed ? "is-readonly" : ""}`}
+                contentEditable={!activeNote.isTrashed}
+                suppressContentEditableWarning
+                data-placeholder={messages.editorPlaceholder}
+                onInput={handleEditorInput}
+                onPaste={handleEditorPaste}
+                onSelect={rememberSelection}
+              />
+            </div>
+          </div>
 
           <div className="editor-bottom-bar">
             <div className="editor-format-actions">
@@ -864,41 +1045,14 @@ export function EditorWorkspace({
                 className="soft-button"
                 disabled={activeNote.isTrashed}
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => applyInlineFormat("bold")}
+                onClick={applyBold}
                 aria-label={messages.boldButton}
                 title={messages.boldButton}
               >
-                <Bold size={16} strokeWidth={2} />
+                <span className="bold-glyph">B</span>
               </button>
 
-              {colorPresets.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  className="color-swatch-button"
-                  disabled={activeNote.isTrashed}
-                  style={{ ["--swatch-color" as string]: color }}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => applyInlineFormat("color", color)}
-                  aria-label={messages.applyColorLabel.replace("{color}", color)}
-                  title={color}
-                />
-              ))}
-
-              <button
-                type="button"
-                className="soft-button"
-                disabled={activeNote.isTrashed}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => {
-                  rememberSelection();
-                  colorInputRef.current?.click();
-                }}
-                aria-label={messages.customColorButton}
-                title={messages.customColorButton}
-              >
-                <Palette size={16} strokeWidth={1.9} />
-              </button>
+              <span className="toolbar-divider" aria-hidden="true" />
 
               <button
                 type="button"
@@ -917,47 +1071,41 @@ export function EditorWorkspace({
                 </span>
               </button>
 
-              <input
-                ref={colorInputRef}
-                className="visually-hidden"
-                type="color"
-                defaultValue={colorPresets[0] || "#3b82f6"}
-                onChange={(event) => applyInlineFormat("color", event.target.value)}
-              />
             </div>
 
             <div className="editor-file-actions">
               {!activeNote.isTrashed ? (
                 activeNote.folderPath === "drafts" ? (
                   <>
-                    <label className="move-note-field">
-                      <span>{messages.moveTargetLabel}</span>
-                      <select
-                        value={draftTargetFolder}
-                        onChange={(event) => onDraftTargetFolderChange(event.target.value)}
-                      >
-                        {draftMoveTargets.map((folder) => (
-                          <option key={folder} value={folder}>
-                            {folder === "inbox" ? messages.inboxLabel : folder}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <select
+                      className="draft-folder-select"
+                      value={draftTargetFolder}
+                      aria-label={messages.saveToFolderButton}
+                      onChange={(event) => onDraftTargetFolderChange(event.target.value)}
+                    >
+                      {draftMoveTargets.map((folder) => (
+                        <option key={folder} value={folder}>
+                          {folder === "inbox" ? messages.inboxLabel : folder}
+                        </option>
+                      ))}
+                    </select>
                     <button
                       type="button"
-                      className="soft-button"
+                      className="primary-button"
                       onClick={() => onSaveDraftToFolder(draftTargetFolder)}
                     >
-                      {messages.saveToFolderButton}
+                      <span>{messages.saveToFolderButton}</span>
+                      <kbd>Ctrl S</kbd>
                     </button>
-                    <button type="button" className="danger-button" onClick={onClearDraft}>
-                      {messages.clearDraftButton}
+                    <button type="button" className="danger-button" onClick={onDeleteDraft}>
+                      {messages.deleteButton}
                     </button>
                   </>
                 ) : (
                   <>
-                    <button type="button" className="soft-button" onClick={onSave}>
-                      {messages.saveButton}
+                    <button type="button" className="primary-button" onClick={onSave}>
+                      <span>{messages.saveButton}</span>
+                      <kbd>Ctrl S</kbd>
                     </button>
                     <button type="button" className="danger-button" onClick={onDelete}>
                       {messages.deleteButton}
@@ -969,9 +1117,6 @@ export function EditorWorkspace({
                   <button type="button" className="soft-button" onClick={onRestore}>
                     {messages.restoreButton}
                   </button>
-                  <button type="button" className="soft-button" onClick={onEmptyTrash}>
-                    {messages.emptyTrashButton}
-                  </button>
                   <button type="button" className="danger-button" onClick={onDeletePermanently}>
                     {messages.deletePermanentlyButton}
                   </button>
@@ -979,7 +1124,7 @@ export function EditorWorkspace({
               )}
             </div>
           </div>
-        </div>
+        </>
       ) : (
         <div className="empty-editor">
           <h3>{messages.emptyEditorTitle}</h3>

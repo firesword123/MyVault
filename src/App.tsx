@@ -20,7 +20,7 @@ import { ShellFrame } from "./components/ShellFrame";
 import { resolveMessages } from "./i18n";
 import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, ResourceUsage, WorkspacePayload } from "./types";
 import { appUiSpec } from "./ui-spec";
-import { noteSignature, previewText } from "./utils";
+import { noteRichText, noteSignature, previewText } from "./utils";
 import { useEmbeddedModules } from "./useEmbeddedModules";
 import "./styles/global.css";
 import "./styles/notes.css";
@@ -37,8 +37,6 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>({
     language: "zh-CN",
     showNoteTime: false,
-    colorPresets: ["#ef4444", "#eab308", "#3b82f6", "#22c55e"],
-    colorPresetCount: 4,
     closeBehavior: "quit",
     httpProxy: "",
     httpsProxy: "",
@@ -62,6 +60,7 @@ function App() {
   const [draftTargetFolders, setDraftTargetFolders] = useState<Record<string, string>>({});
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"general" | "trash">("general");
   const [playerOpen, setPlayerOpen] = useState(false);
   const [resourceUsage, setResourceUsage] = useState<ResourceUsage | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(258);
@@ -366,7 +365,7 @@ function App() {
   async function persistNote(note: NoteDetail, mode: "draft" | "commit") {
     try {
       const saved = await invoke<NoteDetail>("save_note", {
-        input: { id: note.id, title: note.title, content: note.content, mode },
+        input: { id: note.id, title: note.title, blocks: note.blocks, mode },
       });
       setActiveNote(saved);
       setNotes((currentNotes) =>
@@ -380,7 +379,7 @@ function App() {
                   folderPath: saved.folderPath,
                   isDraft: saved.isDraft,
                   isTrashed: saved.isTrashed,
-                  preview: previewText(saved.content),
+                  preview: previewText(noteRichText(saved)),
                   updatedAt: saved.updatedAt,
                   originalFolderPath: saved.originalFolderPath,
                   deletedAt: saved.deletedAt,
@@ -410,12 +409,20 @@ function App() {
   async function trashActiveNote() {
     if (!activeNote) return;
     try {
+      const siblings = notes.filter(
+        (note) => !note.isTrashed && note.folderPath === activeNote.folderPath,
+      );
+      const currentIndex = siblings.findIndex((note) => note.id === activeNote.id);
+      const nextSiblingId =
+        currentIndex >= 0
+          ? siblings[currentIndex + 1]?.id ?? siblings[currentIndex - 1]?.id
+          : undefined;
       await invoke<NoteSummary[]>("trash_note", { id: activeNote.id });
       const workspace = await refreshWorkspace();
       const next =
-        workspace.notes.find((note) => note.id === activeNote.id) ??
+        workspace.notes.find((note) => note.id === nextSiblingId && !note.isTrashed) ??
         workspace.notes.find((note) => !note.isTrashed && !note.isDraft) ??
-        workspace.notes[0];
+        workspace.notes.find((note) => !note.isTrashed);
       if (next) {
         await openNote(next.id);
       } else {
@@ -502,6 +509,7 @@ function App() {
   async function moveActiveNote(folderPath: string) {
     if (!activeNote || !folderPath) return;
     try {
+      await flushPendingDraft(activeNote);
       const moved = await invoke<NoteDetail>("move_note", {
         input: { id: activeNote.id, folderPath },
       });
@@ -514,17 +522,22 @@ function App() {
   }
 
   async function saveDraftToFolder(folderPath: string) {
-    if (!activeNote) return;
+    if (!activeNote || activeNote.folderPath !== "drafts") return;
     try {
       const saved = await invoke<NoteDetail>("save_note", {
-        input: { id: activeNote.id, title: activeNote.title, content: activeNote.content, mode: "commit" },
+        input: { id: activeNote.id, title: activeNote.title, blocks: activeNote.blocks, mode: "commit" },
       });
-      let nextDetail = saved;
-      if (folderPath && folderPath !== "inbox") {
-        nextDetail = await invoke<NoteDetail>("move_note", {
-          input: { id: saved.id, folderPath },
-        });
-      }
+      const nextDetail =
+        folderPath && folderPath !== "inbox"
+          ? await invoke<NoteDetail>("move_note", {
+              input: { id: saved.id, folderPath },
+            })
+          : saved;
+      setDraftTargetFolders((current) => {
+        const next = { ...current };
+        delete next[saved.id];
+        return next;
+      });
       await refreshWorkspace();
       await openNote(nextDetail.id);
     } catch (error) {
@@ -609,11 +622,11 @@ function App() {
     }
   }
 
-  function updateActiveNote(patch: Partial<Pick<NoteDetail, "title" | "content">>) {
+  function updateActiveNote(patch: Partial<Pick<NoteDetail, "title">>) {
     setActiveNote((current) => (current ? { ...current, ...patch } : current));
   }
 
-  async function clearDraft() {
+  async function deleteDraft() {
     if (!activeNote || activeNote.folderPath !== "drafts") return;
     try {
       await invoke<NoteSummary[]>("discard_draft_note", { id: activeNote.id });
@@ -843,7 +856,10 @@ function App() {
                     },
                   )
           }
-          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenSettings={() => {
+            setSettingsSection("general");
+            setSettingsOpen(true);
+          }}
           onPlayerQuickAction={runPlayerQuickAction}
           closePlayerOnPause={settings.closePlayerOnPause}
           showTime={settings.showNoteTime}
@@ -869,13 +885,30 @@ function App() {
 
       <EditorWorkspace
         messages={messages}
+        language={settings.language}
         activeNote={activeNote}
-        colorPresets={settings.colorPresets.slice(0, settings.colorPresetCount)}
         draftMoveTargets={folders.filter((folder) => folder !== "drafts" && folder !== "trash")}
         draftTargetFolder={activeNote ? draftTargetFolders[activeNote.id] ?? "inbox" : "inbox"}
+        saveState={
+          activeNote && noteSignature(activeNote) !== lastSavedSignature.current ? "saving" : "saved"
+        }
         onTitleChange={(title) => updateActiveNote({ title })}
-        onContentChange={(content) => updateActiveNote({ content })}
-        onSave={() => activeNote && void persistNote(activeNote, "commit")}
+        onContentChange={(html) =>
+          setActiveNote((current) =>
+            current
+              ? {
+                  ...current,
+                  blocks: current.blocks.map((block) =>
+                    block.type === "richText" ? { ...block, html } : block,
+                  ),
+                }
+              : current,
+          )
+        }
+        onSave={() =>
+          activeNote &&
+          void persistNote(activeNote, activeNote.folderPath === "drafts" ? "draft" : "commit")
+        }
         onDraftTargetFolderChange={(folderPath) =>
           activeNote &&
           setDraftTargetFolders((current) => ({
@@ -884,11 +917,11 @@ function App() {
           }))
         }
         onSaveDraftToFolder={(folderPath) => void saveDraftToFolder(folderPath)}
-        onClearDraft={() => void clearDraft()}
+        onReveal={() => activeNote && void revealItemInDir(`${vaultPath}/${activeNote.relativePath}`)}
+        onDeleteDraft={() => void deleteDraft()}
         onDelete={() => void trashActiveNote()}
         onRestore={() => void restoreActiveNote()}
         onDeletePermanently={() => void deleteActiveNotePermanently()}
-        onEmptyTrash={() => void emptyTrash()}
         errorMessage={noteErrorMessage}
       />
 
@@ -927,12 +960,11 @@ function App() {
             allProxy={settings.allProxy}
             noProxy={settings.noProxy}
             vaultPath={vaultPath}
-            colorPresets={settings.colorPresets}
-            colorPresetCount={settings.colorPresetCount}
             resourceUsage={resourceUsage}
             trashNotes={notes
               .filter((note) => note.isTrashed)
               .sort((left, right) => (right.deletedAt ?? right.updatedAt) - (left.deletedAt ?? left.updatedAt))}
+            initialSection={settingsSection}
             onLanguageChange={(language) => void updateSettings({ ...settings, language })}
             onShowNoteTimeChange={(showNoteTime) => void updateSettings({ ...settings, showNoteTime })}
             onShowMemoryInTitlebarChange={(showMemoryInTitlebar) => void updateSettings({ ...settings, showMemoryInTitlebar })}
@@ -942,11 +974,19 @@ function App() {
             onHttpsProxyChange={(httpsProxy) => void updateSettings({ ...settings, httpsProxy })}
             onAllProxyChange={(allProxy) => void updateSettings({ ...settings, allProxy })}
             onNoProxyChange={(noProxy) => void updateSettings({ ...settings, noProxy })}
-            onColorPresetsChange={(colorPresets) => void updateSettings({ ...settings, colorPresets })}
-            onColorPresetCountChange={(colorPresetCount) => void updateSettings({ ...settings, colorPresetCount })}
             onUpdateAction={() => void handleUpdateAction()}
-            onRestoreTrashNote={(noteId) => void restoreTrashedNote(noteId)}
-            onDeleteTrashNote={(noteId) => void deleteTrashedNote(noteId)}
+            onRestoreTrashNote={restoreTrashedNote}
+            onDeleteTrashNote={deleteTrashedNote}
+            onViewTrashNote={async (noteId) => {
+              try {
+                return await invoke<NoteDetail>("load_note", { id: noteId });
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                setNoteErrorMessage(mapNoteErrorMessage(message));
+                return null;
+              }
+            }}
+            onEmptyTrash={() => void emptyTrash()}
             onClose={() => setSettingsOpen(false)}
           />
         }
@@ -962,7 +1002,12 @@ function App() {
               setPlayerOpen(moduleId === "player");
             });
         }}
-        onOpenSettings={() => setSettingsOpen((current) => !current)}
+        onOpenSettings={() =>
+          setSettingsOpen((current) => {
+            if (!current) setSettingsSection("general");
+            return !current;
+          })
+        }
       />
     </div>
   );

@@ -13,7 +13,8 @@ use std::{
 };
 use tauri::AppHandle;
 
-const DEFAULT_NOTE_BODY: &str = "# Welcome to MyVault\n\nStart writing here.";
+const NOTE_FORMAT_VERSION: u32 = 1;
+const DEFAULT_NOTE_BODY: &str = "<h1>Welcome to MyVault</h1><p>Start writing here.</p>";
 static NOTE_ID_SEED: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
@@ -52,7 +53,7 @@ pub(crate) struct NoteSummary {
 pub(crate) struct NoteDetail {
     id: String,
     title: String,
-    content: String,
+    blocks: Vec<NoteBlock>,
     created_at: u64,
     updated_at: u64,
     relative_path: String,
@@ -74,7 +75,7 @@ pub(crate) struct CreateNoteInput {
 pub(crate) struct SaveNoteInput {
     id: String,
     title: String,
-    content: String,
+    blocks: Vec<NoteBlock>,
     mode: String,
 }
 
@@ -110,11 +111,19 @@ pub(crate) struct NotesStateInput {
     selected_note_id: String,
 }
 
-#[derive(Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum NoteBlock {
+    RichText { id: String, html: String },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 struct NoteDocument {
+    format_version: u32,
     id: String,
     title: String,
-    content: String,
+    blocks: Vec<NoteBlock>,
     created_at: u64,
     updated_at: u64,
     original_folder_path: Option<String>,
@@ -139,13 +148,13 @@ fn sanitize_title(raw: &str) -> String {
 
 fn note_file_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     validate_note_id(id)?;
-    Ok(drafts_dir(app)?.join(format!("{id}.md")))
+    Ok(drafts_dir(app)?.join(format!("{id}.json")))
 }
 
 fn note_file_path_in_folder(app: &AppHandle, folder: &str, id: &str) -> Result<PathBuf, String> {
     validate_note_id(id)?;
     let normalized = normalize_folder_path(folder)?;
-    Ok(notes_folder_dir(app, &normalized)?.join(format!("{id}.md")))
+    Ok(notes_folder_dir(app, &normalized)?.join(format!("{id}.json")))
 }
 
 fn validate_note_id(id: &str) -> Result<(), String> {
@@ -193,83 +202,44 @@ fn is_inside_system_folder(folder: &str) -> bool {
         .any(|system| folder == *system || folder.starts_with(&format!("{system}/")))
 }
 
-fn serialize_note(document: &NoteDocument) -> String {
-    format!(
-        "---\nid: {}\ntitle: {}\ncreated_at: {}\nupdated_at: {}\noriginal_folder_path: {}\ndeleted_at: {}\n---\n{}",
-        document.id,
-        document.title,
-        document.created_at,
-        document.updated_at,
-        document.original_folder_path.as_deref().unwrap_or(""),
-        document
-            .deleted_at
-            .map(|value| value.to_string())
-            .unwrap_or_default(),
-        document.content
-    )
+fn rich_text_block(note_id: &str, html: String) -> NoteBlock {
+    NoteBlock::RichText {
+        id: format!("block-{note_id}"),
+        html,
+    }
 }
 
-fn parse_note(id: String, raw: &str) -> NoteDocument {
-    let fallback_ts = now_ts();
-
-    if !raw.starts_with("---\n") {
-        return NoteDocument {
-            id,
-            title: "Untitled Note".to_string(),
-            content: raw.to_string(),
-            created_at: fallback_ts,
-            updated_at: fallback_ts,
-            original_folder_path: None,
-            deleted_at: None,
-        };
+fn rich_text_html(document: &NoteDocument) -> &str {
+    match &document.blocks[0] {
+        NoteBlock::RichText { html, .. } => html,
     }
+}
 
-    let mut parts = raw.splitn(3, "---\n");
-    let _ = parts.next();
-    let metadata = parts.next().unwrap_or_default();
-    let content = parts.next().unwrap_or_default().to_string();
-
-    let mut title = "Untitled Note".to_string();
-    let mut created_at = fallback_ts;
-    let mut updated_at = fallback_ts;
-    let mut original_folder_path = None;
-    let mut deleted_at = None;
-
-    for line in metadata.lines() {
-        if let Some((key, value)) = line.split_once(':') {
-            let normalized = value.trim();
-            match key.trim() {
-                "title" => title = sanitize_title(normalized),
-                "created_at" => {
-                    created_at = normalized.parse::<u64>().unwrap_or(fallback_ts);
-                }
-                "updated_at" => {
-                    updated_at = normalized.parse::<u64>().unwrap_or(fallback_ts);
-                }
-                "original_folder_path" => {
-                    if !normalized.is_empty() {
-                        original_folder_path = Some(normalized.to_string());
-                    }
-                }
-                "deleted_at" => {
-                    if !normalized.is_empty() {
-                        deleted_at = normalized.parse::<u64>().ok();
-                    }
-                }
-                _ => {}
-            }
-        }
+fn validate_note_document(document: &NoteDocument, file_id: &str) -> Result<(), String> {
+    if document.format_version != NOTE_FORMAT_VERSION {
+        return Err(format!(
+            "unsupported note format version {}; expected {NOTE_FORMAT_VERSION}",
+            document.format_version
+        ));
     }
-
-    NoteDocument {
-        id,
-        title,
-        content,
-        created_at,
-        updated_at,
-        original_folder_path,
-        deleted_at,
+    if document.id != file_id {
+        return Err("note id does not match its file name".to_string());
     }
+    if document.blocks.len() != 1 {
+        return Err("note must contain exactly one rich-text block".to_string());
+    }
+    let NoteBlock::RichText { id, .. } = &document.blocks[0];
+    validate_note_id(id).map_err(|_| "invalid note block id".to_string())
+}
+
+fn serialize_note(document: &NoteDocument) -> Result<String, String> {
+    serde_json::to_string_pretty(document)
+        .map_err(|error| format!("failed to serialize note: {error}"))
+}
+
+fn write_note_document(path: &Path, document: &NoteDocument) -> Result<(), String> {
+    let raw = serialize_note(document)?;
+    write_utf8_file(path, &raw)
 }
 
 fn load_note_document(path: &Path) -> Result<NoteDocument, String> {
@@ -279,8 +249,10 @@ fn load_note_document(path: &Path) -> Result<NoteDocument, String> {
         .and_then(|stem| stem.to_str())
         .ok_or_else(|| "failed to resolve note file id".to_string())?
         .to_string();
-
-    Ok(parse_note(id, &raw))
+    let document: NoteDocument = serde_json::from_str(&raw)
+        .map_err(|error| format!("failed to parse note JSON: {error}"))?;
+    validate_note_document(&document, &id)?;
+    Ok(document)
 }
 
 fn folder_path_from_note_path(app: &AppHandle, path: &Path) -> Result<String, String> {
@@ -333,7 +305,10 @@ fn find_note_path_by_id(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
                 continue;
             }
 
-            if path.is_file() && path.file_stem().and_then(|stem| stem.to_str()) == Some(id) {
+            if path.is_file()
+                && path.extension().and_then(|extension| extension.to_str()) == Some("json")
+                && path.file_stem().and_then(|stem| stem.to_str()) == Some(id)
+            {
                 return Ok(path);
             }
         }
@@ -405,7 +380,7 @@ fn note_to_summary(
         is_draft: is_draft_folder(&folder_path),
         is_trashed: is_trash_folder(&folder_path),
         updated_at: document.updated_at,
-        preview: preview_from_content(&document.content),
+        preview: preview_from_content(rich_text_html(document)),
         original_folder_path: document.original_folder_path.clone(),
         deleted_at: document.deleted_at,
     })
@@ -425,7 +400,7 @@ fn note_to_detail(
     Ok(NoteDetail {
         id: document.id.clone(),
         title: document.title.clone(),
-        content: document.content.clone(),
+        blocks: document.blocks.clone(),
         created_at: document.created_at,
         updated_at: document.updated_at,
         relative_path,
@@ -455,7 +430,7 @@ fn collect_notes(app: &AppHandle) -> Result<Vec<NoteSummary>, String> {
                 continue;
             }
 
-            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
 
@@ -542,7 +517,7 @@ fn folder_contains_notes(app: &AppHandle, folder: &str) -> Result<bool, String> 
 
             if path.is_dir() {
                 directories.push(path);
-            } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
                 return Ok(true);
             }
         }
@@ -557,10 +532,12 @@ fn seed_default_note(app: &AppHandle) -> Result<(), String> {
     }
 
     let ts = now_ts();
+    let id = next_note_id(app);
     let note = NoteDocument {
-        id: next_note_id(app),
+        format_version: NOTE_FORMAT_VERSION,
+        id: id.clone(),
         title: "Welcome".to_string(),
-        content: DEFAULT_NOTE_BODY.to_string(),
+        blocks: vec![rich_text_block(&id, DEFAULT_NOTE_BODY.to_string())],
         created_at: ts,
         updated_at: ts,
         original_folder_path: None,
@@ -568,8 +545,7 @@ fn seed_default_note(app: &AppHandle) -> Result<(), String> {
     };
 
     let path = note_file_path_in_folder(app, INBOX_FOLDER, &note.id)?;
-    write_utf8_file(&path, &serialize_note(&note))
-        .map_err(|error| format!("failed to seed note: {error}"))
+    write_note_document(&path, &note).map_err(|error| format!("failed to seed note: {error}"))
 }
 
 #[tauri::command]
@@ -621,10 +597,12 @@ pub(crate) fn create_note(app: AppHandle, input: CreateNoteInput) -> Result<Note
 
     let ts = now_ts();
     let title = sanitize_title(input.title.as_deref().unwrap_or("Untitled Note"));
+    let id = next_note_id(&app);
     let document = NoteDocument {
-        id: next_note_id(&app),
+        format_version: NOTE_FORMAT_VERSION,
+        id: id.clone(),
         title,
-        content: String::new(),
+        blocks: vec![rich_text_block(&id, String::new())],
         created_at: ts,
         updated_at: ts,
         original_folder_path: None,
@@ -632,7 +610,7 @@ pub(crate) fn create_note(app: AppHandle, input: CreateNoteInput) -> Result<Note
     };
 
     let path = note_file_path(&app, &document.id)?;
-    write_utf8_file(&path, &serialize_note(&document))
+    write_note_document(&path, &document)
         .map_err(|error| format!("failed to create note: {error}"))?;
 
     note_to_detail(&app, &path, document)
@@ -719,7 +697,8 @@ pub(crate) fn save_note(app: AppHandle, input: SaveNoteInput) -> Result<NoteDeta
     let current_folder = folder_path_from_note_path(&app, &current_path)?;
 
     document.title = sanitize_title(&input.title);
-    document.content = input.content;
+    document.blocks = input.blocks;
+    validate_note_document(&document, &input.id)?;
     document.updated_at = now_ts();
 
     let next_folder = if input.mode == "commit" && is_draft_folder(&current_folder) {
@@ -741,7 +720,7 @@ pub(crate) fn save_note(app: AppHandle, input: SaveNoteInput) -> Result<NoteDeta
             .map_err(|error| format!("failed to create note folder: {error}"))?;
     }
 
-    write_utf8_file(&next_path, &serialize_note(&document))
+    write_note_document(&next_path, &document)
         .map_err(|error| format!("failed to save note: {error}"))?;
 
     if next_path != current_path && current_path.exists() {
@@ -766,7 +745,7 @@ pub(crate) fn trash_note(app: AppHandle, id: String) -> Result<Vec<NoteSummary>,
     document.deleted_at = Some(now_ts());
 
     let target = note_file_path_in_folder(&app, TRASH_FOLDER, &id)?;
-    write_utf8_file(&target, &serialize_note(&document))
+    write_note_document(&target, &document)
         .map_err(|error| format!("failed to move note to trash: {error}"))?;
     if target != path && path.exists() {
         fs::remove_file(path)
@@ -811,7 +790,7 @@ pub(crate) fn restore_note(app: AppHandle, id: String) -> Result<NoteDetail, Str
     document.original_folder_path = None;
     document.deleted_at = None;
 
-    write_utf8_file(&target, &serialize_note(&document))
+    write_note_document(&target, &document)
         .map_err(|error| format!("failed to restore note: {error}"))?;
     if target != path && path.exists() {
         fs::remove_file(path).map_err(|error| format!("failed to remove trashed note: {error}"))?;
@@ -888,7 +867,7 @@ pub(crate) fn move_note(app: AppHandle, input: MoveNoteInput) -> Result<NoteDeta
     document.deleted_at = None;
 
     let target_path = note_file_path_in_folder(&app, &target_folder, &input.id)?;
-    write_utf8_file(&target_path, &serialize_note(&document))
+    write_note_document(&target_path, &document)
         .map_err(|error| format!("failed to move note: {error}"))?;
     if target_path != current_path && current_path.exists() {
         fs::remove_file(current_path)
@@ -932,7 +911,7 @@ mod tests {
     fn utf8_file_roundtrip_is_explicit() {
         let dir = temp_dir_path("utf8");
         fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("note.md");
+        let path = dir.join("note.json");
 
         write_utf8_file(&path, "你好\nhello").unwrap();
         let content = read_utf8_file(&path).unwrap();
@@ -942,22 +921,24 @@ mod tests {
     }
 
     #[test]
-    fn serialize_parse_roundtrip_keeps_trash_metadata() {
+    fn json_roundtrip_keeps_blocks_and_trash_metadata() {
         let document = NoteDocument {
+            format_version: NOTE_FORMAT_VERSION,
             id: "note-1".to_string(),
             title: "Roundtrip".to_string(),
-            content: "<p>body</p>".to_string(),
+            blocks: vec![rich_text_block("note-1", "<p>body</p>".to_string())],
             created_at: 10,
             updated_at: 20,
             original_folder_path: Some("projects/demo".to_string()),
             deleted_at: Some(30),
         };
 
-        let raw = serialize_note(&document);
-        let parsed = parse_note(document.id.clone(), &raw);
+        let raw = serialize_note(&document).unwrap();
+        let parsed: NoteDocument = serde_json::from_str(&raw).unwrap();
+        validate_note_document(&parsed, "note-1").unwrap();
 
         assert_eq!(parsed.title, document.title);
-        assert_eq!(parsed.content, document.content);
+        assert_eq!(parsed.blocks, document.blocks);
         assert_eq!(parsed.original_folder_path, document.original_folder_path);
         assert_eq!(parsed.deleted_at, document.deleted_at);
     }
@@ -1003,24 +984,25 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(&empty_branch).unwrap();
 
-        let original = inbox.join("note-1.md");
+        let original = inbox.join("note-1.json");
         let mut document = NoteDocument {
+            format_version: NOTE_FORMAT_VERSION,
             id: "note-1".to_string(),
             title: "Smoke".to_string(),
-            content: "body".to_string(),
+            blocks: vec![rich_text_block("note-1", "body".to_string())],
             created_at: 1,
             updated_at: 2,
             original_folder_path: None,
             deleted_at: None,
         };
 
-        write_utf8_file(&original, &serialize_note(&document)).unwrap();
+        write_note_document(&original, &document).unwrap();
         assert!(original.exists());
 
         document.original_folder_path = Some(INBOX_FOLDER.to_string());
         document.deleted_at = Some(3);
-        let trashed = trash.join("note-1.md");
-        write_utf8_file(&trashed, &serialize_note(&document)).unwrap();
+        let trashed = trash.join("note-1.json");
+        write_note_document(&trashed, &document).unwrap();
         fs::remove_file(&original).unwrap();
         assert!(trashed.exists());
         assert!(!original.exists());
@@ -1028,8 +1010,8 @@ mod tests {
         let mut restored = load_note_document(&trashed).unwrap();
         restored.original_folder_path = None;
         restored.deleted_at = None;
-        let moved = project.join("note-1.md");
-        write_utf8_file(&moved, &serialize_note(&restored)).unwrap();
+        let moved = project.join("note-1.json");
+        write_note_document(&moved, &restored).unwrap();
         fs::remove_file(&trashed).unwrap();
 
         assert!(moved.exists());

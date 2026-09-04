@@ -913,3 +913,323 @@
     display: none;
   }
 }
+
+/* Shared MyVault visual system */
+.asmr-module-body {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  background: var(--bg-shell);
+}
+
+.asmr-sidebar {
+  border-right: 0;
+  background: var(--bg-shell);
+}
+
+.asmr-sidebar-header {
+  padding: 18px 20px 12px;
+}
+
+.asmr-nav-list {
+  padding: 6px 12px;
+}
+
+.asmr-nav-item {
+  min-height: 48px;
+  gap: 11px;
+  padding: 0 12px;
+  border-radius: 9px;
+  color: var(--text-muted);
+}
+
+.asmr-nav-item svg {
+  color: var(--text-muted);
+}
+
+.asmr-nav-item small {
+  color: var(--text-faint);
+}
+
+.asmr-nav-item:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.asmr-nav-item.is-active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.asmr-nav-item.is-active svg {
+  color: var(--accent-text);
+}
+
+.asmr-import-actions {
+  margin-right: 12px;
+  margin-left: 12px;
+}
+
+.asmr-import-button {
+  min-height: 38px;
+  border-radius: var(--control-radius);
+  background: var(--accent-strong);
+  box-shadow: 0 2px 8px rgba(107, 92, 231, 0.2);
+  font-size: 0.82rem;
+}
+
+.asmr-import-button:hover {
+  background: var(--accent-hover);
+}
+
+.asmr-import-button.is-move {
+  border: 1px solid var(--border-panel);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+
+.asmr-import-button.is-move:hover {
+  color: var(--text-primary);
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
+}
+
+.asmr-main {
+  border: 1px solid var(--border-panel);
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: var(--panel-radius) 0 0;
+  background: var(--editor-bg);
+}
+
+.asmr-library-panel,
+.asmr-detail-view,
+.asmr-file-panel {
+  background: var(--editor-bg);
+}
+
+.asmr-library-toolbar {
+  min-height: 62px;
+  border-bottom: 1px solid var(--border-panel);
+}
+
+.asmr-search {
+  min-height: 36px;
+  border-color: var(--border-panel);
+  border-radius: 10px;
+  color: var(--text-faint);
+  background: var(--bg-panel);
+}
+
+.asmr-search:focus-within,
+.asmr-page-size select:focus,
+.asmr-structured-import-header select:focus {
+  border-color: var(--accent-strong);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.asmr-search input,
+.asmr-page-size select,
+.asmr-structured-import-header select,
+.asmr-picker-search input {
+  color: var(--text-primary);
+}
+
+.asmr-work-grid {
+  gap: 14px;
+  padding-top: 18px;
+}
+
+.asmr-work-card {
+  border-color: var(--border-panel);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+
+.asmr-work-card:hover,
+.asmr-work-card.is-selected {
+  border-color: var(--accent-strong);
+  box-shadow: var(--shadow-panel);
+}
+
+.asmr-work-cover {
+  border-radius: 11px 0 0 11px;
+  background:
+    linear-gradient(135deg, rgba(107, 92, 231, 0.9), rgba(160, 92, 231, 0.72)),
+    var(--accent-soft);
+}
+
+.asmr-work-card-body > strong,
+.asmr-file-copy strong,
+.asmr-filter-row,
+.asmr-breadcrumb strong {
+  color: var(--text-primary);
+}
+
+.asmr-work-card-body > span,
+.asmr-work-meta,
+.asmr-file-copy small,
+.asmr-breadcrumb,
+.asmr-file-toolbar-actions > span,
+.asmr-page-size,
+.asmr-library-pagination,
+.asmr-selected-empty,
+.asmr-picker-empty,
+.asmr-structured-import-footer > span {
+  color: var(--text-muted);
+}
+
+.asmr-work-card-body > .asmr-card-chip-row span,
+.asmr-chip {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  box-shadow: none;
+}
+
+.asmr-work-card-body > .asmr-card-chip-row .is-voice,
+.asmr-chip.is-voice {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.asmr-library-pagination {
+  border-top-color: var(--border-panel);
+}
+
+.asmr-page-size select,
+.asmr-library-pagination button {
+  border: 1px solid var(--border-panel);
+  border-radius: var(--control-radius);
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  box-shadow: none;
+}
+
+.asmr-library-pagination button:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
+}
+
+.asmr-filter-grid {
+  border-top-color: var(--border-panel);
+  background: var(--editor-bg);
+}
+
+.asmr-filter-row {
+  min-height: 58px;
+  border-bottom-color: var(--border-panel);
+  background: var(--bg-panel);
+}
+
+.asmr-filter-row:hover,
+.asmr-picker-option:hover {
+  background: var(--bg-hover);
+}
+
+.asmr-filter-row strong {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.asmr-filter-actions button {
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.asmr-metadata-modal,
+.asmr-selected-chip,
+.asmr-picker-popover,
+.asmr-structured-import,
+.asmr-structured-import textarea {
+  color: var(--text-primary);
+  border-color: var(--border-panel);
+  background: var(--bg-panel);
+}
+
+.asmr-metadata-modal {
+  box-shadow: var(--shadow-panel);
+}
+
+.asmr-metadata-modal textarea,
+.asmr-picker-add-button,
+.asmr-structured-import-header select {
+  color: var(--text-primary);
+  border-color: var(--border-panel);
+  background: var(--bg-panel);
+}
+
+.asmr-selected-chip {
+  color: var(--text-muted);
+}
+
+.asmr-selected-chip:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-hover);
+}
+
+.asmr-selected-chip.is-voice {
+  color: var(--accent-text);
+  border-color: transparent;
+  background: var(--accent-soft);
+}
+
+.asmr-picker-add-button {
+  color: var(--accent-text);
+}
+
+.asmr-picker-add-button:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.asmr-picker-search,
+.asmr-detail-header,
+.asmr-work-strip,
+.asmr-file-toolbar {
+  border-color: var(--border-panel);
+  background: var(--bg-panel);
+}
+
+.asmr-picker-option {
+  color: var(--text-muted);
+}
+
+.asmr-structured-import-header > span {
+  color: var(--text-primary);
+}
+
+.asmr-cover-placeholder {
+  background:
+    linear-gradient(135deg, rgba(107, 92, 231, 0.9), rgba(160, 92, 231, 0.68)),
+    var(--accent-soft);
+}
+
+.asmr-file-row {
+  min-height: 70px;
+  border-bottom-color: var(--border-panel);
+  color: var(--text-primary);
+  background: var(--bg-panel);
+}
+
+.asmr-file-row:hover,
+.asmr-file-row.is-selected {
+  background: var(--bg-hover);
+}
+
+.asmr-file-row.is-selected {
+  box-shadow: inset 3px 0 var(--accent-strong);
+}
+
+.asmr-file-icon,
+.asmr-file-row.is-subtitle .asmr-file-icon,
+.asmr-file-row.is-image .asmr-file-icon,
+.asmr-file-row.is-file .asmr-file-icon {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.asmr-file-row.is-folder .asmr-file-icon {
+  color: var(--text-muted);
+  background: transparent;
+}

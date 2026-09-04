@@ -2,10 +2,12 @@ import { AsmrWorkspace } from "./components/AsmrWorkspace";
 import { TitleBar } from "./components/TitleBar";
 import { resolveMessages } from "./i18n";
 import { isEmbeddedModule } from "./useEmbeddedGuard";
+import { useStoredTheme } from "./useStoredTheme";
 import "./styles/global.css";
 import "./styles/asmr.css";
 
 export function AsmrApp() {
+  useStoredTheme();
   const messages = resolveMessages("zh-CN");
 
   return (

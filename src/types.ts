@@ -14,7 +14,7 @@ export type NoteSummary = {
 export type NoteDetail = {
   id: string;
   title: string;
-  content: string;
+  blocks: NoteBlock[];
   createdAt: number;
   updatedAt: number;
   relativePath: string;
@@ -23,6 +23,12 @@ export type NoteDetail = {
   isTrashed: boolean;
   originalFolderPath: string | null;
   deletedAt: number | null;
+};
+
+export type NoteBlock = {
+  id: string;
+  type: "richText";
+  html: string;
 };
 
 export type BootstrapPayload = {
@@ -40,8 +46,6 @@ export type WorkspacePayload = {
 export type AppSettings = {
   language: string;
   showNoteTime: boolean;
-  colorPresets: string[];
-  colorPresetCount: number;
   closeBehavior: "quit" | "tray";
   httpProxy: string;
   httpsProxy: string;

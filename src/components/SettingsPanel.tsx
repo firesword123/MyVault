@@ -1,11 +1,14 @@
-import { Activity, ArrowLeft, Globe2, ListMusic, Palette, RotateCcw, Search, Settings2, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Activity, ArrowLeft, Eye, Globe2, ListMusic, RotateCcw, Search, Settings2, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { LocaleMessages } from "../i18n";
-import type { NoteSummary, ResourceUsage } from "../types";
-import { formatTimestamp } from "../utils";
+import type { NoteDetail, NoteSummary, ResourceUsage } from "../types";
+import { formatTimestamp, noteRichText } from "../utils";
+
+type SettingsSection = "general" | "player" | "network" | "resources" | "trash";
 
 type SettingsPanelProps = {
   open: boolean;
+  initialSection: SettingsSection;
   messages: LocaleMessages;
   version: string;
   updateStatus: string;
@@ -21,8 +24,6 @@ type SettingsPanelProps = {
   allProxy: string;
   noProxy: string;
   vaultPath: string;
-  colorPresets: string[];
-  colorPresetCount: number;
   resourceUsage: ResourceUsage | null;
   trashNotes: NoteSummary[];
   onLanguageChange: (language: string) => void;
@@ -34,18 +35,17 @@ type SettingsPanelProps = {
   onHttpsProxyChange: (value: string) => void;
   onAllProxyChange: (value: string) => void;
   onNoProxyChange: (value: string) => void;
-  onColorPresetsChange: (colors: string[]) => void;
-  onColorPresetCountChange: (count: number) => void;
   onUpdateAction: () => void;
-  onRestoreTrashNote: (noteId: string) => void;
-  onDeleteTrashNote: (noteId: string) => void;
+  onViewTrashNote: (noteId: string) => Promise<NoteDetail | null>;
+  onRestoreTrashNote: (noteId: string) => Promise<void>;
+  onDeleteTrashNote: (noteId: string) => Promise<void>;
+  onEmptyTrash: () => void;
   onClose: () => void;
 };
 
-type SettingsSection = "general" | "appearance" | "player" | "network" | "resources" | "trash";
-
 export function SettingsPanel({
   open,
+  initialSection,
   messages,
   version,
   updateStatus,
@@ -61,8 +61,6 @@ export function SettingsPanel({
   allProxy,
   noProxy,
   vaultPath,
-  colorPresets,
-  colorPresetCount,
   resourceUsage,
   trashNotes,
   onLanguageChange,
@@ -74,21 +72,39 @@ export function SettingsPanel({
   onHttpsProxyChange,
   onAllProxyChange,
   onNoProxyChange,
-  onColorPresetsChange,
-  onColorPresetCountChange,
   onUpdateAction,
+  onViewTrashNote,
   onRestoreTrashNote,
   onDeleteTrashNote,
+  onEmptyTrash,
   onClose,
 }: SettingsPanelProps) {
   const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [searchText, setSearchText] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<NoteSummary | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Pick<NoteSummary, "id" | "title"> | null>(null);
+  const [viewedTrashNote, setViewedTrashNote] = useState<NoteDetail | null>(null);
+  const [trashNoteLoading, setTrashNoteLoading] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setActiveSection(initialSection);
+      setViewedTrashNote(null);
+    }
+  }, [open, initialSection]);
+
+  async function viewTrashNote(noteId: string) {
+    setTrashNoteLoading(true);
+    try {
+      const detail = await onViewTrashNote(noteId);
+      if (detail?.isTrashed) setViewedTrashNote(detail);
+    } finally {
+      setTrashNoteLoading(false);
+    }
+  }
 
   const sections = useMemo(
     () => [
       { id: "general" as const, label: messages.settingsGeneralSection, icon: Settings2 },
-      { id: "appearance" as const, label: messages.settingsAppearanceSection, icon: Palette },
       { id: "player" as const, label: messages.settingsPlayerSection, icon: ListMusic },
       { id: "network" as const, label: messages.networkSectionLabel, icon: Globe2 },
       { id: "resources" as const, label: messages.settingsResourcesSection, icon: Activity },
@@ -101,10 +117,6 @@ export function SettingsPanel({
     section.label.toLocaleLowerCase().includes(normalizedSearch),
   );
   const activeLabel = sections.find((section) => section.id === activeSection)?.label ?? messages.settingsTitle;
-  const visiblePresets = Array.from(
-    { length: colorPresetCount },
-    (_, index) => colorPresets[index] || "#3b82f6",
-  );
   const formatMemory = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   const formatCpu = (value: number) => `${value.toFixed(1)}%`;
 
@@ -138,7 +150,10 @@ export function SettingsPanel({
                   key={section.id}
                   type="button"
                   className={activeSection === section.id ? "is-active" : ""}
-                  onClick={() => setActiveSection(section.id)}
+                  onClick={() => {
+                    setActiveSection(section.id);
+                    setViewedTrashNote(null);
+                  }}
                 >
                   <Icon size={18} strokeWidth={1.7} />
                   <span>{section.label}</span>
@@ -155,8 +170,16 @@ export function SettingsPanel({
       <main className="settings-content">
         <div className="settings-content-inner">
           <header className="settings-content-header">
-            <span className="section-label">{messages.settingsTitle}</span>
-            <h1>{activeLabel}</h1>
+            <div className="settings-content-title">
+              <span className="section-label">{messages.settingsTitle}</span>
+              <h1>{activeLabel}</h1>
+            </div>
+            {activeSection === "trash" && !viewedTrashNote && trashNotes.length ? (
+              <button type="button" className="danger-button settings-empty-trash-button" onClick={onEmptyTrash}>
+                <Trash2 size={15} strokeWidth={1.8} />
+                {messages.emptyTrashButton}
+              </button>
+            ) : null}
           </header>
 
           {activeSection === "general" ? (
@@ -214,48 +237,6 @@ export function SettingsPanel({
                     <option value="tray">{messages.closeBehaviorTray}</option>
                   </select>
                 </label>
-              </div>
-            </section>
-          ) : null}
-
-          {activeSection === "appearance" ? (
-            <section className="settings-section">
-              <h2>{messages.settingsAppearanceSection}</h2>
-              <div className="settings-card">
-                <label className="settings-row">
-                  <span className="settings-row-copy">
-                    <strong>{messages.colorPresetCountLabel}</strong>
-                  </span>
-                  <input
-                    className="settings-number-input"
-                    type="number"
-                    min={1}
-                    max={8}
-                    value={colorPresetCount}
-                    onChange={(event) => onColorPresetCountChange(Number(event.target.value) || 1)}
-                  />
-                </label>
-                <div className="settings-row settings-colors-row">
-                  <span className="settings-row-copy">
-                    <strong>{messages.colorPresetsLabel}</strong>
-                  </span>
-                  <div className="settings-color-grid">
-                    {visiblePresets.map((color, index) => (
-                      <label key={`${index}-${color}`} className="settings-color-item">
-                        <span>{messages.colorPresetItemLabel.replace("{index}", String(index + 1))}</span>
-                        <input
-                          type="color"
-                          value={color}
-                          onChange={(event) => {
-                            const next = [...colorPresets];
-                            next[index] = event.target.value;
-                            onColorPresetsChange(next);
-                          }}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </div>
               </div>
             </section>
           ) : null}
@@ -355,8 +336,45 @@ export function SettingsPanel({
 
           {activeSection === "trash" ? (
             <section className="settings-section settings-trash-section">
-              <h2>{messages.trashLabel}</h2>
-              {trashNotes.length ? (
+              {viewedTrashNote ? (
+                <div className="settings-trash-view">
+                  <div className="settings-trash-document">
+                    <h2>{viewedTrashNote.title}</h2>
+                    <div className="editor-meta">
+                      <span className="editor-meta-chip">
+                        <Trash2 size={14} strokeWidth={1.7} />
+                        {messages.trashLabel}
+                      </span>
+                      {viewedTrashNote.deletedAt ? (
+                        <span>{messages.trashDeletedAtLabel.replace("{time}", formatTimestamp(viewedTrashNote.deletedAt))}</span>
+                      ) : null}
+                    </div>
+                    <div
+                      className="note-editor is-readonly settings-trash-note-body"
+                      dangerouslySetInnerHTML={{ __html: noteRichText(viewedTrashNote) }}
+                    />
+                  </div>
+                  <div className="settings-trash-view-actions">
+                    <button
+                      type="button"
+                      className="soft-button"
+                      onClick={async () => {
+                        await onRestoreTrashNote(viewedTrashNote.id);
+                        setViewedTrashNote(null);
+                      }}
+                    >
+                      <RotateCcw size={15} strokeWidth={1.8} />
+                      {messages.restoreButton}
+                    </button>
+                    <button type="button" className="danger-button" onClick={() => setPendingDelete(viewedTrashNote)}>
+                      <Trash2 size={15} strokeWidth={1.8} />
+                      {messages.deletePermanentlyButton}
+                    </button>
+                  </div>
+                </div>
+              ) : trashNoteLoading ? (
+                <div className="settings-trash-empty">{messages.bootingLabel}</div>
+              ) : trashNotes.length ? (
                 <div className="settings-trash-list">
                   {trashNotes.map((note) => (
                     <article className="settings-trash-item" key={note.id}>
@@ -368,6 +386,10 @@ export function SettingsPanel({
                         ) : null}
                       </div>
                       <div className="settings-trash-actions">
+                        <button type="button" className="soft-button" onClick={() => void viewTrashNote(note.id)}>
+                          <Eye size={15} strokeWidth={1.8} />
+                          {messages.viewButton}
+                        </button>
                         <button type="button" className="soft-button" onClick={() => onRestoreTrashNote(note.id)}>
                           <RotateCcw size={15} strokeWidth={1.8} />
                           {messages.restoreButton}
@@ -409,7 +431,9 @@ export function SettingsPanel({
                 type="button"
                 className="danger-button"
                 onClick={() => {
-                  onDeleteTrashNote(pendingDelete.id);
+                  void onDeleteTrashNote(pendingDelete.id).then(() => {
+                    if (viewedTrashNote?.id === pendingDelete.id) setViewedTrashNote(null);
+                  });
                   setPendingDelete(null);
                 }}
               >
