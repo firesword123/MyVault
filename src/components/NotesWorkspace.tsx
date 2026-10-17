@@ -6,6 +6,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  ListFilter,
   MoreHorizontal,
   Pause,
   PenLine,
@@ -297,6 +298,27 @@ export function NotesListPanel({
   const groups = groupNotes(messages, folders, filteredNotes);
   const noteIndex = new Map(filteredNotes.map((note) => [note.id, note]));
   const mainGroups = groups.filter((group) => group.key !== "trash");
+  const [singleFolderMode, setSingleFolderMode] = useState(() => {
+    try {
+      return window.localStorage.getItem("myvault-notes-single-folder") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [singleFolderPath, setSingleFolderPath] = useState(() => {
+    try {
+      return window.localStorage.getItem("myvault-notes-single-folder-path") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const selectedFolder = mainGroups.find((group) => group.key === singleFolderPath)
+    ?? mainGroups.find((group) => group.key === activeFolderPath)
+    ?? mainGroups[0];
+  const displayedGroups = singleFolderMode && selectedFolder
+    ? [selectedFolder, ...(folderPickerOpen ? mainGroups.filter((group) => group.key !== selectedFolder.key) : [])]
+    : mainGroups;
   const [folderModal, setFolderModal] = useState<FolderModalState>(null);
   const [folderContextMenu, setFolderContextMenu] = useState<{
     group: NoteGroup;
@@ -322,6 +344,23 @@ export function NotesListPanel({
   const folderContextMenuRef = useRef<HTMLDivElement | null>(null);
   const noteContextMenuRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("myvault-notes-single-folder", String(singleFolderMode));
+    } catch {
+      // This display preference is optional when storage is unavailable.
+    }
+  }, [singleFolderMode]);
+
+  useEffect(() => {
+    if (!singleFolderPath) return;
+    try {
+      window.localStorage.setItem("myvault-notes-single-folder-path", singleFolderPath);
+    } catch {
+      // Keep the selection in memory when storage is unavailable.
+    }
+  }, [singleFolderPath]);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -434,6 +473,8 @@ export function NotesListPanel({
   }
 
   function renderGroup(group: NoteGroup) {
+    const expanded = singleFolderMode ? !folderPickerOpen : openFolders[group.key] !== false;
+    const selected = singleFolderMode ? selectedFolder?.key === group.key : activeFolderPath === group.key;
     return (
       <section
         key={group.key}
@@ -443,10 +484,20 @@ export function NotesListPanel({
         <div className="folder-row">
           <button
             type="button"
-            className={`note-group-header ${activeFolderPath === group.key ? "is-active" : ""} ${
+            className={`note-group-header ${selected ? "is-active" : ""} ${
               dragTargetFolder === group.key ? "is-drop-target" : ""
             }`}
-            onClick={() => onToggleFolder(group.key)}
+            onClick={() => {
+              if (!singleFolderMode) {
+                onToggleFolder(group.key);
+              } else if (folderPickerOpen) {
+                setSingleFolderPath(group.key);
+                setFolderPickerOpen(false);
+              } else {
+                setFolderPickerOpen(true);
+              }
+            }}
+            title={singleFolderMode ? messages.switchFolderButton : undefined}
             onContextMenu={(event) => {
               event.preventDefault();
               setNoteContextMenu(null);
@@ -454,13 +505,13 @@ export function NotesListPanel({
               const nextPosition = positionContextMenu(event.clientX, event.clientY, 190, menuHeight);
               setFolderContextMenu({ group, x: nextPosition.x, y: nextPosition.y });
             }}
-            aria-expanded={openFolders[group.key] !== false}
+            aria-expanded={expanded}
           >
-            <span className={`folder-chevron ${openFolders[group.key] !== false ? "is-open" : ""}`}>
+            <span className={`folder-chevron ${expanded ? "is-open" : ""}`}>
               <ChevronRight size={14} strokeWidth={2.1} />
             </span>
             <span className="folder-glyph">
-              {openFolders[group.key] !== false ? (
+              {expanded ? (
                 <FolderOpen size={16} strokeWidth={1.8} />
               ) : (
                 <Folder size={16} strokeWidth={1.8} />
@@ -472,7 +523,7 @@ export function NotesListPanel({
 
         </div>
 
-        <div className={`note-group-items ${openFolders[group.key] === false ? "is-collapsed" : ""}`}>
+        <div className={`note-group-items ${expanded ? "" : "is-collapsed"}`}>
           {group.notes.map((note) => (
             <button
               key={note.id}
@@ -545,11 +596,10 @@ export function NotesListPanel({
           className="sidebar-action-button is-primary"
           onClick={onCreateNote}
           aria-label={messages.createButton}
-          title={messages.createButton}
+          title={`${messages.createButton} (Ctrl N)`}
         >
           <PenLine size={17} strokeWidth={1.8} />
           <span>{messages.createButton}</span>
-          <kbd>Ctrl N</kbd>
         </button>
         <button
           type="button"
@@ -559,6 +609,20 @@ export function NotesListPanel({
           title={messages.createFolderButton}
         >
           <FolderPlus size={17} strokeWidth={1.8} />
+        </button>
+        <button
+          type="button"
+          className={`sidebar-action-button is-folder is-single-folder ${singleFolderMode ? "is-active" : ""}`}
+          onClick={() => {
+            if (!singleFolderMode && selectedFolder) setSingleFolderPath(selectedFolder.key);
+            setSingleFolderMode((current) => !current);
+            setFolderPickerOpen(false);
+          }}
+          aria-label={messages.singleFolderButton}
+          aria-pressed={singleFolderMode}
+          title={messages.singleFolderButton}
+        >
+          <ListFilter size={17} strokeWidth={1.8} />
         </button>
       </div>
 
@@ -574,15 +638,24 @@ export function NotesListPanel({
         <kbd>Ctrl K</kbd>
       </label>
 
-      <div className="notes-tree">
+      <div className="notes-tree" onKeyDown={(event) => {
+        if (event.key === "Escape" && folderPickerOpen) {
+          setFolderPickerOpen(false);
+          event.stopPropagation();
+        }
+      }}>
         <div className="notes-list">
           {booting ? <p className="empty-state">{messages.bootingLabel}</p> : null}
 
-          {!booting && !filteredNotes.length ? (
-            <p className="empty-state">{messages.emptySearchLabel}</p>
-          ) : null}
+          {displayedGroups.map((group) => renderGroup(group))}
 
-          {mainGroups.map((group) => renderGroup(group))}
+          {!booting && !folderPickerOpen && !displayedGroups.some((group) => group.notes.length) ? (
+            <p className="empty-state">
+              {searchText.trim()
+                ? messages.emptySearchLabel
+                : singleFolderMode ? messages.emptyFolderLabel : messages.emptyNotesLabel}
+            </p>
+          ) : null}
         </div>
 
       </div>
@@ -777,6 +850,9 @@ export function EditorWorkspace({
   errorMessage,
 }: EditorWorkspaceProps) {
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const editorNoteIdRef = useRef<string | undefined>(undefined);
+  const editorContentRef = useRef("");
+  const isComposingRef = useRef(false);
   const selectionRangeRef = useRef<Range | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const editorMoreRef = useRef<HTMLDivElement | null>(null);
@@ -786,6 +862,16 @@ export function EditorWorkspace({
   const activeContent = noteRichText(activeNote);
 
   useEffect(() => {
+    const noteChanged = editorNoteIdRef.current !== activeNote?.id;
+    if (!noteChanged && (isComposingRef.current || editorContentRef.current === activeContent)) {
+      return;
+    }
+    if (noteChanged) {
+      selectionRangeRef.current = null;
+      isComposingRef.current = false;
+    }
+    editorNoteIdRef.current = activeNote?.id;
+    editorContentRef.current = activeContent;
     const nextContent = toEditorHtml(activeContent);
     if (editorRef.current && editorRef.current.innerHTML !== nextContent) {
       editorRef.current.innerHTML = nextContent;
@@ -815,7 +901,15 @@ export function EditorWorkspace({
   }, []);
 
   function emitEditorContent() {
-    onContentChange(editorRef.current?.innerHTML ?? "");
+    const editor = editorRef.current;
+    if (!editor || isComposingRef.current) return;
+    setWordCount(editor.innerText.replace(/\s/g, "").length);
+    const content = editor.innerHTML;
+    // Local edits already live in the DOM. Their state echo must not replace
+    // text nodes, which would reset the selection and interrupt the IME.
+    if (editorContentRef.current === content) return;
+    editorContentRef.current = content;
+    onContentChange(content);
   }
 
   function editorSelectionRange() {
@@ -850,9 +944,9 @@ export function EditorWorkspace({
     selectionRangeRef.current = range.cloneRange();
   }
 
-  function handleEditorInput(_event: FormEvent<HTMLDivElement>) {
+  function handleEditorInput(event: FormEvent<HTMLDivElement>) {
+    if (isComposingRef.current || (event.nativeEvent as InputEvent).isComposing) return;
     rememberSelection();
-    setWordCount((editorRef.current?.innerText ?? "").replace(/\s/g, "").length);
     emitEditorContent();
   }
 
@@ -1038,6 +1132,14 @@ export function EditorWorkspace({
                 suppressContentEditableWarning
                 data-placeholder={messages.editorPlaceholder}
                 onInput={handleEditorInput}
+                onCompositionStart={() => {
+                  isComposingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  isComposingRef.current = false;
+                  rememberSelection();
+                  emitEditorContent();
+                }}
                 onPaste={handleEditorPaste}
                 onSelect={rememberSelection}
               />

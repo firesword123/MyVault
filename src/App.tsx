@@ -371,12 +371,25 @@ function App() {
     }
   }
 
+  function applySavedNote(note: NoteDetail, saved: NoteDetail) {
+    if (activeNoteRef.current?.id === saved.id) {
+      lastSavedSignature.current = noteSignature(saved);
+    }
+    setActiveNote((current) => {
+      if (current?.id !== saved.id) return current;
+      // Saving is asynchronous; keep any edits made since this request began.
+      return noteSignature(current) === noteSignature(note)
+        ? saved
+        : { ...saved, title: current.title, blocks: current.blocks };
+    });
+  }
+
   async function persistNote(note: NoteDetail, mode: "draft" | "commit") {
     try {
       const saved = await invoke<NoteDetail>("save_note", {
         input: { id: note.id, title: note.title, blocks: note.blocks, mode },
       });
-      setActiveNote(saved);
+      applySavedNote(note, saved);
       setNotes((currentNotes) =>
         currentNotes
           .map((item) =>
@@ -407,8 +420,6 @@ function App() {
           return next;
         });
       }
-      lastSavedSignature.current = noteSignature(saved);
-      autosaveTimer.current = null;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(mapNoteErrorMessage(message));
@@ -546,13 +557,13 @@ function App() {
           targetFolder: folderPath,
         },
       });
+      applySavedNote(activeNote, saved);
       setDraftTargetFolders((current) => {
         const next = { ...current };
         delete next[saved.id];
         return next;
       });
       await refreshWorkspace();
-      await openNote(saved.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(mapNoteErrorMessage(message));
@@ -686,6 +697,7 @@ function App() {
       window.clearTimeout(autosaveTimer.current);
     }
     autosaveTimer.current = window.setTimeout(() => {
+      autosaveTimer.current = null;
       void persistNote(activeNote, "draft");
     }, 900);
     return () => {

@@ -38,7 +38,7 @@
 
 .sidebar-action-stack {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 36px;
+  grid-template-columns: minmax(0, 1fr) 36px 36px;
   gap: 8px;
 }
 
@@ -94,6 +94,12 @@
   background: rgba(255, 255, 255, 0.8);
 }
 
+.sidebar-action-button.is-single-folder.is-active {
+  color: var(--accent-strong);
+  border-color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
 .sidebar kbd {
   margin-left: auto;
   padding: 2px 5px;
@@ -107,13 +113,6 @@
   font-weight: 500;
   line-height: 1;
   white-space: nowrap;
-}
-
-.sidebar-action-button.is-primary kbd {
-  color: rgba(255, 255, 255, 0.88);
-  border-color: rgba(255, 255, 255, 0.35);
-  border-bottom-width: 1px;
-  background: rgba(255, 255, 255, 0.12);
 }
 
 .list-toolbar {
