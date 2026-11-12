@@ -46,7 +46,12 @@ pub(crate) struct AppSettings {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NotesWindowState {
+    #[serde(default)]
     pub(crate) selected_note_id: String,
+    #[serde(default)]
+    pub(crate) current_folder: String,
+    #[serde(default)]
+    pub(crate) folder_order: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +83,8 @@ pub(crate) fn default_close_behavior() -> String {
 fn default_notes_state() -> NotesWindowState {
     NotesWindowState {
         selected_note_id: String::new(),
+        current_folder: String::new(),
+        folder_order: Vec::new(),
     }
 }
 
@@ -214,14 +221,12 @@ pub(crate) fn ensure_vault_layout(app: &AppHandle) -> Result<(), String> {
     let root = crate::storage::prepare_data_root(app)?;
     let vault = vault_dir(app)?;
     let notes = notes_dir(app)?;
-    let drafts = drafts_dir(app)?;
     let trash = trash_dir(app)?;
     let settings = settings_path(app)?;
 
     fs::create_dir_all(&root).map_err(|error| format!("failed to create app root: {error}"))?;
     fs::create_dir_all(&vault).map_err(|error| format!("failed to create vault dir: {error}"))?;
     fs::create_dir_all(&notes).map_err(|error| format!("failed to create notes dir: {error}"))?;
-    fs::create_dir_all(&drafts).map_err(|error| format!("failed to create drafts dir: {error}"))?;
     fs::create_dir_all(&trash).map_err(|error| format!("failed to create trash dir: {error}"))?;
 
     if !settings.exists() {

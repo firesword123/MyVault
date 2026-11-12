@@ -115,7 +115,6 @@ fn validate_manifest(root: &Path) -> Result<(), String> {
 
 fn create_layout(root: &Path) -> Result<(), String> {
     for relative in [
-        "Notes/_Drafts",
         "Notes/_Inbox",
         "Notes/_Trash",
         "DL_ASMR",

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import type { TitleBarPlayerAction } from "./TitleBar";
 import type { LocaleMessages } from "../i18n";
 import type { AppUiSpec } from "../ui-spec";
 import { TitleBar } from "./TitleBar";
@@ -11,6 +12,7 @@ type ShellFrameProps = {
   settingsPanel: ReactNode;
   onSelectModule: (moduleId: string) => void;
   onOpenSettings: () => void;
+  playerAction?: TitleBarPlayerAction | null;
   showMemory?: boolean;
   memoryBytes?: number | null;
   processCount?: number | null;
@@ -27,6 +29,7 @@ export function ShellFrame({
   settingsPanel,
   onSelectModule,
   onOpenSettings,
+  playerAction,
   showMemory,
   memoryBytes,
   processCount,
@@ -43,7 +46,7 @@ export function ShellFrame({
         activeModule={activeModule}
         onSelectModule={onSelectModule}
         onOpenSettings={onOpenSettings}
-        showSettings={false}
+        playerAction={playerAction}
         showMemory={showMemory}
         memoryBytes={memoryBytes}
         processCount={processCount}

@@ -43,9 +43,22 @@ export function noteRichText(note: { blocks: Array<{ type: string; html?: string
   return note?.blocks.find((block) => block.type === "richText")?.html ?? "";
 }
 
+/** Plain text of editor HTML, with block boundaries kept as line breaks. */
+export function plainTextFromHtml(content: string) {
+  const marked = content.replace(/<(br|\/p|\/div|\/li|\/h[1-6]|\/blockquote|\/pre)\b[^>]*>/gi, "$&\n");
+  return new DOMParser().parseFromString(marked, "text/html").body.textContent ?? "";
+}
+
 export function previewText(content: string) {
-  const plain = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-  return plain.slice(0, 120) || "Empty note";
+  const line = plainTextFromHtml(content)
+    .split("\n")
+    .map((item) => item.trim())
+    .find(Boolean);
+  return (line ?? "").slice(0, 120);
+}
+
+export function searchTextFromHtml(content: string) {
+  return plainTextFromHtml(content).replace(/\s+/g, " ").trim();
 }
 
 export function formatFileSize(size: number) {

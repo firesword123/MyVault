@@ -13,14 +13,14 @@ import {
   useRef,
   useState,
 } from "react";
-import { EditorWorkspace, NotesListPanel } from "./components/NotesWorkspace";
+import { EditorWorkspace, NotesListPanel, orderFolders, topFolder, type SaveState } from "./components/NotesWorkspace";
 import { PlayerWorkspace } from "./components/PlayerWorkspace";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShellFrame } from "./components/ShellFrame";
 import { resolveMessages } from "./i18n";
 import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, ResourceUsage, WorkspacePayload } from "./types";
 import { appUiSpec } from "./ui-spec";
-import { noteRichText, noteSignature, previewText } from "./utils";
+import { formatClockTime, noteRichText, noteSignature, previewText, searchTextFromHtml } from "./utils";
 import { useEmbeddedModules } from "./useEmbeddedModules";
 import "./styles/global.css";
 import "./styles/notes.css";
@@ -29,6 +29,23 @@ import "./styles/player.css";
 function normalizeFolderInput(folderPath: string) {
   return folderPath.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
+
+const FOLDER_RAIL_WIDTH = 62;
+
+function firstNoteInFolder(notes: NoteSummary[], folderPath: string) {
+  return notes.find((note) => !note.isTrashed && topFolder(note.folderPath) === folderPath);
+}
+
+function isBlankNoteBody(html: string) {
+  return !html.replace(/<[^>]*>/g, "").replace(/&nbsp;| /g, "").trim();
+}
+
+type ConfirmRequest = {
+  title: string;
+  body: string;
+  danger: boolean;
+  resolve: (confirmed: boolean) => void;
+};
 
 function App() {
   const embedded = useEmbeddedModules();
@@ -44,6 +61,8 @@ function App() {
     noProxy: "",
     notesState: {
       selectedNoteId: "",
+      currentFolder: "",
+      folderOrder: [],
     },
     persistentModules: [],
     closePlayerOnPause: false,
@@ -57,13 +76,18 @@ function App() {
   const [searchText, setSearchText] = useState("");
   const [notesBooting, setNotesBooting] = useState(true);
   const [noteErrorMessage, setNoteErrorMessage] = useState("");
-  const [draftTargetFolders, setDraftTargetFolders] = useState<Record<string, string>>({});
-  const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
+  const [currentFolder, setCurrentFolder] = useState("inbox");
+  const [folderOrder, setFolderOrder] = useState<string[]>([]);
+  const [autoFocusTitleNoteId, setAutoFocusTitleNoteId] = useState("");
+  const [saveInFlight, setSaveInFlight] = useState(0);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<"general" | "trash">("general");
   const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerHasQueue, setPlayerHasQueue] = useState(false);
   const [resourceUsage, setResourceUsage] = useState<ResourceUsage | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(258);
+  const [sidebarWidth, setSidebarWidth] = useState(258 - FOLDER_RAIL_WIDTH);
   const [sidebarResizeActive, setSidebarResizeActive] = useState(false);
   const [appVersion, setAppVersion] = useState("Resolving...");
   const [availableUpdate, setAvailableUpdate] = useState<Update | null>(null);
@@ -74,23 +98,15 @@ function App() {
   const isResizingSidebar = useRef(false);
   const lastSavedSignature = useRef("");
   const autosaveTimer = useRef<number | null>(null);
+  // A note created in this session that is discarded if left untouched.
+  const freshNoteIdRef = useRef<string | null>(null);
+  // Saves run one at a time so an older write never lands after a newer one.
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const deferredSearch = useDeferredValue(searchText);
   const messages = resolveMessages(settings.language);
-  const activeFolderPath = activeNote?.folderPath ?? "";
-  const draftNotes = useMemo(
-    () => notes.filter((note) => note.isDraft).sort((left, right) => right.updatedAt - left.updatedAt),
-    [notes],
-  );
-  const draftMoveTargets = useMemo(
-    () => folders.filter((folder) => folder !== "drafts" && folder !== "trash"),
-    [folders],
-  );
-
-  function draftDestination(noteId: string) {
-    const selected = draftTargetFolders[noteId];
-    return selected && draftMoveTargets.includes(selected) ? selected : draftMoveTargets[0] ?? "";
-  }
+  const orderedFolders = useMemo(() => orderFolders(folders, folderOrder), [folders, folderOrder]);
+  const effectiveFolder = orderedFolders.includes(currentFolder) ? currentFolder : "inbox";
 
   function isFolderPathWithin(folderPath: string, rootFolder: string) {
     return folderPath === rootFolder || folderPath.startsWith(`${rootFolder}/`);
@@ -142,20 +158,146 @@ function App() {
       window.clearTimeout(autosaveTimer.current);
       autosaveTimer.current = null;
     }
-    if (noteSignature(note) === lastSavedSignature.current) {
-      return;
+    if (noteSignature(note) !== lastSavedSignature.current) {
+      await persistNote(note, "draft");
     }
-    await persistNote(note, "draft");
+    await saveChainRef.current;
   }
 
-  const filteredNotes = useMemo(() => {
+  // Window close and hide-to-tray: write pending edits first.
+  const flushBeforeExitRef = useRef<(closing: boolean) => Promise<void>>(async () => {});
+  flushBeforeExitRef.current = async (closing) => {
+    const note = activeNoteRef.current;
+    if (closing) await leaveNote(note);
+    else await flushPendingDraft(note);
+  };
+
+  useEffect(() => {
+    const cleanups = [
+      listen("app:before-close", () => {
+        void flushBeforeExitRef.current(true)
+          .catch(() => undefined)
+          .finally(() => void invoke("confirm_close"));
+      }),
+      listen("app:flush", () => {
+        void flushBeforeExitRef.current(false).catch(() => undefined);
+      }),
+    ];
+    return () => {
+      cleanups.forEach((cleanup) => void cleanup.then((unlisten) => unlisten()));
+    };
+  }, []);
+
+  // Search covers every folder: the list shows hits in the current folder and
+  // the rail marks other folders that also have hits.
+  const { filteredNotes, matchedFolders } = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
-    if (!query) return notes;
-    return notes.filter((note) => {
-      const haystacks = [note.title, note.preview, note.relativePath, note.folderPath];
-      return haystacks.some((value) => value.toLowerCase().includes(query));
+    const live = notes.filter((note) => !note.isTrashed);
+    const hits = query
+      ? live.filter((note) => [note.title, note.searchText].some((value) => value.toLowerCase().includes(query)))
+      : live;
+    return {
+      filteredNotes: hits.filter((note) => topFolder(note.folderPath) === effectiveFolder),
+      matchedFolders: query ? Array.from(new Set(hits.map((note) => topFolder(note.folderPath)))) : [],
+    };
+  }, [deferredSearch, notes, effectiveFolder]);
+  const activeNoteUnsaved = Boolean(activeNote && noteSignature(activeNote) !== lastSavedSignature.current);
+  const saveState: SaveState = saveFailed
+    ? "failed"
+    : saveInFlight > 0
+      ? "saving"
+      : activeNoteUnsaved
+        ? "unsaved"
+        : "saved";
+  const saveStatus = !activeNote
+    ? ""
+    : saveState === "failed"
+      ? messages.saveFailedStatus
+      : saveState === "saving"
+        ? messages.saving
+        : saveState === "unsaved"
+          ? messages.unsavedStatus
+          : `${messages.savedStatus} · ${formatClockTime(activeNote.updatedAt, settings.language)}`;
+
+  function askConfirm(title: string, body: string, danger = false) {
+    return new Promise<boolean>((resolve) => setConfirmRequest({ title, body, danger, resolve }));
+  }
+
+  function answerConfirm(confirmed: boolean) {
+    confirmRequest?.resolve(confirmed);
+    setConfirmRequest(null);
+  }
+
+  function persistNotesState(patch: {
+    selectedNoteId?: string;
+    currentFolder?: string;
+    folderOrder?: string[];
+  }) {
+    void invoke<AppSettings>("update_notes_state", { input: patch }).then(setSettings, (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      setNoteErrorMessage(mapNoteErrorMessage(message));
     });
-  }, [deferredSearch, notes]);
+  }
+
+  function changeCurrentFolder(folderPath: string) {
+    setCurrentFolder(folderPath);
+    persistNotesState({ currentFolder: folderPath });
+  }
+
+  function isUntouchedFreshNote(note: NoteDetail) {
+    if (freshNoteIdRef.current !== note.id) return false;
+    const title = note.title.trim();
+    return (!title || title === messages.newNoteFallbackLabel) && isBlankNoteBody(noteRichText(note));
+  }
+
+  /** Saves pending edits, or discards a new note that was never written in. */
+  async function leaveNote(note: NoteDetail | null) {
+    if (!note) return;
+    if (isUntouchedFreshNote(note)) {
+      freshNoteIdRef.current = null;
+      if (autosaveTimer.current) {
+        window.clearTimeout(autosaveTimer.current);
+        autosaveTimer.current = null;
+      }
+      try {
+        await invoke<NoteSummary[]>("discard_empty_note", { id: note.id });
+        await refreshWorkspace();
+      } catch {
+        // The backend refuses non-empty notes; keeping the note is the safe fallback.
+      }
+      return;
+    }
+    if (freshNoteIdRef.current === note.id) freshNoteIdRef.current = null;
+    await flushPendingDraft(note);
+  }
+
+  async function selectFolder(folderPath: string) {
+    setSearchText("");
+    if (folderPath === effectiveFolder) return;
+    changeCurrentFolder(folderPath);
+    const first = firstNoteInFolder(notes, folderPath);
+    if (first) {
+      await openNote(first.id);
+    } else {
+      await leaveNote(activeNoteRef.current);
+      setActiveNote(null);
+      setSelectedNoteId("");
+    }
+  }
+
+  function selectNoteFromList(note: NoteSummary) {
+    // Opening a search hit from another folder moves the list context with it.
+    if (topFolder(note.folderPath) !== effectiveFolder) {
+      changeCurrentFolder(topFolder(note.folderPath));
+      setSearchText("");
+    }
+    void openNote(note.id);
+  }
+
+  function reorderFolders(order: string[]) {
+    setFolderOrder(order);
+    persistNotesState({ folderOrder: order });
+  }
 
   useEffect(() => {
     activeNoteRef.current = activeNote;
@@ -184,36 +326,18 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    setOpenFolders((current) => {
-      const next = { ...current };
-      for (const folder of folders) {
-        if (!(folder in next)) {
-          next[folder] = true;
-        }
-      }
-      return next;
-    });
-  }, [folders]);
-
   async function openNote(noteId: string) {
     setNoteErrorMessage("");
     try {
       const currentNote = activeNoteRef.current;
       if (currentNote && currentNote.id !== noteId) {
-        await flushPendingDraft(currentNote);
+        await leaveNote(currentNote);
       }
       const detail = await invoke<NoteDetail>("load_note", { id: noteId });
       startTransition(() => {
         setActiveNote(detail);
         setSelectedNoteId(detail.id);
         lastSavedSignature.current = noteSignature(detail);
-        if (detail.folderPath === "drafts") {
-          setDraftTargetFolders((current) => ({
-            ...current,
-            [detail.id]: current[detail.id] ?? "",
-          }));
-        }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -238,10 +362,20 @@ function App() {
       setVaultPath(notesPayload.vaultPath);
       setNotes(notesPayload.notes);
       setFolders(notesPayload.folders);
+      const notesState = notesPayload.settings.notesState;
+      setFolderOrder(notesState.folderOrder ?? []);
 
-      const preferredNoteId = notesPayload.settings.notesState.selectedNoteId;
-      const preferredNote = notesPayload.notes.find((note) => note.id === preferredNoteId);
-      const firstNote = preferredNote ?? notesPayload.notes.find((note) => !note.isDraft) ?? notesPayload.notes[0];
+      const liveNotes = notesPayload.notes.filter((note) => !note.isTrashed);
+      const preferredNote = liveNotes.find((note) => note.id === notesState.selectedNoteId);
+      const savedFolder =
+        notesState.currentFolder && notesState.currentFolder !== "trash" && notesPayload.folders.includes(notesState.currentFolder)
+          ? notesState.currentFolder
+          : "";
+      const startFolder = savedFolder || (preferredNote ? topFolder(preferredNote.folderPath) : "inbox");
+      setCurrentFolder(startFolder);
+      const firstNote =
+        (preferredNote && topFolder(preferredNote.folderPath) === startFolder ? preferredNote : undefined) ??
+        firstNoteInFolder(liveNotes, startFolder);
       if (firstNote) {
         await openNote(firstNote.id);
       } else {
@@ -257,18 +391,22 @@ function App() {
   }
 
   async function createNote() {
-    const existingDraft = draftNotes[0];
-    if (existingDraft) {
-      await openNote(existingDraft.id);
+    const current = activeNoteRef.current;
+    if (current && isUntouchedFreshNote(current) && current.folderPath === effectiveFolder) {
+      // Reuse the untouched new note instead of stacking empty files.
+      setAutoFocusTitleNoteId("");
+      window.setTimeout(() => setAutoFocusTitleNoteId(current.id), 0);
       return;
     }
     try {
+      setSearchText("");
       const detail = await invoke<NoteDetail>("create_note", {
-        input: { title: "Untitled Note" },
+        input: { title: "", folderPath: effectiveFolder },
       });
       await refreshWorkspace();
-      setDraftTargetFolders((current) => ({ ...current, [detail.id]: current[detail.id] ?? "" }));
       await openNote(detail.id);
+      freshNoteIdRef.current = detail.id;
+      setAutoFocusTitleNoteId(detail.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(message);
@@ -291,7 +429,7 @@ function App() {
         input: { path: normalizedPath },
       });
       setFolders(nextFolders);
-      setOpenFolders((current) => ({ ...current, [normalizedPath]: true }));
+      await selectFolder(normalizedPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(mapNoteErrorMessage(message));
@@ -314,15 +452,12 @@ function App() {
         input: { fromPath, toPath: nextPath },
       });
       setFolders(nextFolders);
-      setOpenFolders((current) => {
-        const next = { ...current };
-        for (const [folderPath, isOpen] of Object.entries(current)) {
-          if (!isFolderPathWithin(folderPath, fromPath)) continue;
-          delete next[folderPath];
-          next[replaceFolderPrefix(folderPath, fromPath, nextPath)] = isOpen;
-        }
-        return next;
-      });
+      const nextOrder = folderOrder.map((folderPath) => replaceFolderPrefix(folderPath, fromPath, nextPath));
+      setFolderOrder(nextOrder);
+      persistNotesState({ folderOrder: nextOrder });
+      if (isFolderPathWithin(effectiveFolder, fromPath)) {
+        changeCurrentFolder(replaceFolderPrefix(effectiveFolder, fromPath, nextPath));
+      }
       setNotes((current) =>
         current.map((note) =>
           isFolderPathWithin(note.folderPath, fromPath)
@@ -351,20 +486,15 @@ function App() {
 
   async function deleteFolder(path: string) {
     try {
-      if (!window.confirm(`${messages.deleteFolderConfirmTitle}\n\n${messages.deleteFolderConfirmBody}`)) {
+      if (!(await askConfirm(messages.deleteFolderConfirmTitle, messages.deleteFolderConfirmBody, true))) {
         return;
       }
       const nextFolders = await invoke<string[]>("delete_folder", { input: { path } });
       setFolders(nextFolders);
-      setOpenFolders((current) => {
-        const next = { ...current };
-        for (const folderPath of Object.keys(current)) {
-          if (isFolderPathWithin(folderPath, path)) {
-            delete next[folderPath];
-          }
-        }
-        return next;
-      });
+      const nextOrder = folderOrder.filter((folderPath) => !isFolderPathWithin(folderPath, path));
+      setFolderOrder(nextOrder);
+      persistNotesState({ folderOrder: nextOrder });
+      if (isFolderPathWithin(effectiveFolder, path)) await selectFolder("inbox");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(mapNoteErrorMessage(message));
@@ -384,7 +514,14 @@ function App() {
     });
   }
 
-  async function persistNote(note: NoteDetail, mode: "draft" | "commit") {
+  function persistNote(note: NoteDetail, mode: "draft" | "commit") {
+    setSaveInFlight((count) => count + 1);
+    const run = saveChainRef.current.then(() => writeNote(note, mode));
+    saveChainRef.current = run.finally(() => setSaveInFlight((count) => count - 1));
+    return saveChainRef.current;
+  }
+
+  async function writeNote(note: NoteDetail, mode: "draft" | "commit") {
     try {
       const saved = await invoke<NoteDetail>("save_note", {
         input: { id: note.id, title: note.title, blocks: note.blocks, mode },
@@ -402,6 +539,7 @@ function App() {
                   isDraft: saved.isDraft,
                   isTrashed: saved.isTrashed,
                   preview: previewText(noteRichText(saved)),
+                  searchText: searchTextFromHtml(noteRichText(saved)),
                   updatedAt: saved.updatedAt,
                   originalFolderPath: saved.originalFolderPath,
                   deletedAt: saved.deletedAt,
@@ -413,24 +551,26 @@ function App() {
       setFolders((currentFolders) =>
         currentFolders.includes(saved.folderPath) ? currentFolders : [...currentFolders, saved.folderPath],
       );
-      if (saved.folderPath !== "drafts") {
-        setDraftTargetFolders((current) => {
-          const next = { ...current };
-          delete next[saved.id];
-          return next;
-        });
-      }
+      setSaveFailed(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNoteErrorMessage(mapNoteErrorMessage(message));
+      setSaveFailed(true);
     }
+  }
+
+  function retrySave() {
+    const note = activeNoteRef.current;
+    if (!note || note.isTrashed) return;
+    setNoteErrorMessage("");
+    void persistNote(note, "commit");
   }
 
   async function trashActiveNote() {
     if (!activeNote) return;
     try {
       const siblings = notes.filter(
-        (note) => !note.isTrashed && note.folderPath === activeNote.folderPath,
+        (note) => !note.isTrashed && topFolder(note.folderPath) === topFolder(activeNote.folderPath),
       );
       const currentIndex = siblings.findIndex((note) => note.id === activeNote.id);
       const nextSiblingId =
@@ -441,8 +581,7 @@ function App() {
       const workspace = await refreshWorkspace();
       const next =
         workspace.notes.find((note) => note.id === nextSiblingId && !note.isTrashed) ??
-        workspace.notes.find((note) => !note.isTrashed && !note.isDraft) ??
-        workspace.notes.find((note) => !note.isTrashed);
+        firstNoteInFolder(workspace.notes, effectiveFolder);
       if (next) {
         await openNote(next.id);
       } else {
@@ -458,11 +597,12 @@ function App() {
   async function restoreActiveNote() {
     if (!activeNote) return;
     try {
-      if (!window.confirm(`${messages.restoreNoteConfirmTitle}\n\n${messages.restoreNoteConfirmBody}`)) {
+      if (!(await askConfirm(messages.restoreNoteConfirmTitle, messages.restoreNoteConfirmBody))) {
         return;
       }
       const restored = await invoke<NoteDetail>("restore_note", { id: activeNote.id });
       await refreshWorkspace();
+      changeCurrentFolder(topFolder(restored.folderPath));
       await openNote(restored.id);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -474,15 +614,13 @@ function App() {
     if (!activeNote) return;
     try {
       if (
-        !window.confirm(
-          `${messages.deleteNotePermanentConfirmTitle}\n\n${messages.deleteNotePermanentConfirmBody}`,
-        )
+        !(await askConfirm(messages.deleteNotePermanentConfirmTitle, messages.deleteNotePermanentConfirmBody, true))
       ) {
         return;
       }
       await invoke<NoteSummary[]>("delete_note", { id: activeNote.id });
       const workspace = await refreshWorkspace();
-      const next = workspace.notes.find((note) => note.folderPath === "trash") ?? workspace.notes[0];
+      const next = firstNoteInFolder(workspace.notes, effectiveFolder);
       if (next) {
         await openNote(next.id);
       } else {
@@ -513,7 +651,7 @@ function App() {
       await invoke<NoteSummary[]>("delete_note", { id: noteId });
       const workspace = await refreshWorkspace();
       if (activeNoteRef.current?.id === noteId) {
-        const next = workspace.notes.find((note) => !note.isTrashed && !note.isDraft) ?? workspace.notes[0];
+        const next = firstNoteInFolder(workspace.notes, effectiveFolder);
         if (next) await openNote(next.id);
         else {
           setActiveNote(null);
@@ -541,43 +679,14 @@ function App() {
     }
   }
 
-  async function saveDraftToFolder(folderPath: string) {
-    if (!activeNote || activeNote.folderPath !== "drafts") return;
-    if (!folderPath || !draftMoveTargets.includes(folderPath)) {
-      setNoteErrorMessage(messages.errorMoveTargetMissing);
-      return;
-    }
-    try {
-      const saved = await invoke<NoteDetail>("save_note", {
-        input: {
-          id: activeNote.id,
-          title: activeNote.title,
-          blocks: activeNote.blocks,
-          mode: "commit",
-          targetFolder: folderPath,
-        },
-      });
-      applySavedNote(activeNote, saved);
-      setDraftTargetFolders((current) => {
-        const next = { ...current };
-        delete next[saved.id];
-        return next;
-      });
-      await refreshWorkspace();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setNoteErrorMessage(mapNoteErrorMessage(message));
-    }
-  }
-
   async function emptyTrash() {
     try {
-      if (!window.confirm(`${messages.emptyTrashConfirmTitle}\n\n${messages.emptyTrashConfirmBody}`)) {
+      if (!(await askConfirm(messages.emptyTrashConfirmTitle, messages.emptyTrashConfirmBody, true))) {
         return;
       }
       await invoke<NoteSummary[]>("empty_trash");
       const workspace = await refreshWorkspace();
-      const next = workspace.notes.find((note) => !note.isTrashed && !note.isDraft) ?? workspace.notes[0];
+      const next = firstNoteInFolder(workspace.notes, effectiveFolder);
       if (next) {
         await openNote(next.id);
       } else {
@@ -650,38 +759,11 @@ function App() {
     setActiveNote((current) => (current ? { ...current, ...patch } : current));
   }
 
-  async function deleteDraft() {
-    if (!activeNote || activeNote.folderPath !== "drafts") return;
-    try {
-      await invoke<NoteSummary[]>("discard_draft_note", { id: activeNote.id });
-      const workspace = await refreshWorkspace();
-      setDraftTargetFolders((current) => {
-        const next = { ...current };
-        delete next[activeNote.id];
-        return next;
-      });
-      const next = workspace.notes.find((note) => !note.isDraft && !note.isTrashed) ?? workspace.notes[0];
-      if (next) {
-        await openNote(next.id);
-      } else {
-        setActiveNote(null);
-        setSelectedNoteId("");
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setNoteErrorMessage(mapNoteErrorMessage(message));
-    }
-  }
-
   function handleEditorKeyDown(event: KeyboardEvent<HTMLElement>) {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
       event.preventDefault();
-      if (!activeNote) return;
-      if (activeNote.folderPath === "drafts") {
-        void saveDraftToFolder(draftDestination(activeNote.id));
-      } else {
-        void persistNote(activeNote, "commit");
-      }
+      if (!activeNote || activeNote.isTrashed) return;
+      void persistNote(activeNote, "commit");
     }
   }
 
@@ -710,14 +792,7 @@ function App() {
   useEffect(() => {
     if (notesBooting) return;
     if (settings.notesState.selectedNoteId === selectedNoteId) return;
-    void invoke<AppSettings>("update_notes_state", {
-      input: {
-        selectedNoteId,
-      },
-    }).then(setSettings, (error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      setNoteErrorMessage(mapNoteErrorMessage(message));
-    });
+    persistNotesState({ selectedNoteId });
   }, [notesBooting, selectedNoteId]);
 
   useEffect(() => {
@@ -769,7 +844,7 @@ function App() {
   useEffect(() => {
     function handleMouseMove(event: MouseEvent) {
       if (!isResizingSidebar.current) return;
-      const nextWidth = Math.min(Math.max(event.clientX, 220), 460);
+      const nextWidth = Math.min(Math.max(event.clientX - FOLDER_RAIL_WIDTH, 170), 400);
       setSidebarWidth(nextWidth);
     }
 
@@ -789,21 +864,31 @@ function App() {
   const notesBodyContent = (
     <div
       className={`module-body notes-module-body workspace-view ${playerOpen || embedded.active ? "is-hidden" : "is-active"}`}
-      style={{ ["--sidebar-width" as string]: `${sidebarWidth}px` }}
+      style={{
+        ["--sidebar-width" as string]: `${sidebarWidth + FOLDER_RAIL_WIDTH}px`,
+        ["--folder-rail-width" as string]: `${FOLDER_RAIL_WIDTH}px`,
+      }}
       onKeyDown={handleEditorKeyDown}
     >
       <aside className="sidebar">
         <NotesListPanel
           messages={messages}
-          onCreateNote={() => void createNote()}
+          active={!playerOpen && !embedded.active && !settingsOpen}
+          booting={notesBooting}
+          folders={orderedFolders}
+          currentFolder={effectiveFolder}
+          onSelectFolder={(folderPath) => void selectFolder(folderPath)}
+          onReorderFolders={reorderFolders}
+          notes={filteredNotes}
           searchText={searchText}
           onSearchTextChange={setSearchText}
-          booting={notesBooting}
-          folders={folders}
-          filteredNotes={filteredNotes}
+          matchedFolders={matchedFolders}
+          saveStatus={saveStatus}
+          saveState={saveState}
+          onRetrySave={retrySave}
           selectedNoteId={selectedNoteId}
-          activeFolderPath={activeFolderPath}
-          onSelectNote={(noteId) => void openNote(noteId)}
+          onSelectNote={selectNoteFromList}
+          onCreateNote={() => void createNote()}
           onCreateFolder={(name) => void createFolder(name)}
           onRenameFolder={(fromPath, toPath) => void renameFolder(fromPath, toPath)}
           onDeleteFolder={(path) => void deleteFolder(path)}
@@ -881,20 +966,11 @@ function App() {
                     },
                   )
           }
-          onOpenSettings={() => {
-            setSettingsSection("general");
+          onOpenTrash={() => {
+            setSettingsSection("trash");
             setSettingsOpen(true);
           }}
-          onPlayerQuickAction={runPlayerQuickAction}
-          closePlayerOnPause={settings.closePlayerOnPause}
           showTime={settings.showNoteTime}
-          openFolders={openFolders}
-          onToggleFolder={(folderPath) =>
-            setOpenFolders((current) => ({
-              ...current,
-              [folderPath]: current[folderPath] === false,
-            }))
-          }
         />
       </aside>
 
@@ -912,11 +988,7 @@ function App() {
         messages={messages}
         language={settings.language}
         activeNote={activeNote}
-        draftMoveTargets={draftMoveTargets}
-        draftTargetFolder={activeNote ? draftDestination(activeNote.id) : ""}
-        saveState={
-          activeNote && noteSignature(activeNote) !== lastSavedSignature.current ? "saving" : "saved"
-        }
+        autoFocusTitleNoteId={autoFocusTitleNoteId}
         onTitleChange={(title) => updateActiveNote({ title })}
         onContentChange={(html) =>
           setActiveNote((current) =>
@@ -930,21 +1002,6 @@ function App() {
               : current,
           )
         }
-        onSave={() =>
-          activeNote &&
-          void persistNote(activeNote, activeNote.folderPath === "drafts" ? "draft" : "commit")
-        }
-        onDraftTargetFolderChange={(folderPath) =>
-          activeNote &&
-          setDraftTargetFolders((current) => ({
-            ...current,
-            [activeNote.id]: folderPath,
-          }))
-        }
-        onSaveDraftToFolder={(folderPath) => void saveDraftToFolder(folderPath)}
-        onReveal={() => activeNote && void revealItemInDir(`${vaultPath}/${activeNote.relativePath}`)}
-        onDeleteDraft={() => void deleteDraft()}
-        onDelete={() => void trashActiveNote()}
         onRestore={() => void restoreActiveNote()}
         onDeletePermanently={() => void deleteActiveNotePermanently()}
         errorMessage={noteErrorMessage}
@@ -963,7 +1020,11 @@ function App() {
         bodyContent={
           <>
             {notesBodyContent}
-            <PlayerWorkspace active={playerOpen && !embedded.active} onBack={() => setPlayerOpen(false)} />
+            <PlayerWorkspace
+              active={playerOpen && !embedded.active}
+              onBack={() => setPlayerOpen(false)}
+              onQueueChange={setPlayerHasQueue}
+            />
             {embedded.active && <div className="embedded-placeholder">正在加载独立 WebView…</div>}
           </>
         }
@@ -1015,6 +1076,15 @@ function App() {
             onClose={() => setSettingsOpen(false)}
           />
         }
+        playerAction={
+          playerHasQueue
+            ? {
+                label: settings.closePlayerOnPause ? messages.closePlayerButton : messages.pausePlayerButton,
+                kind: settings.closePlayerOnPause ? "close" : "pause",
+                onClick: runPlayerQuickAction,
+              }
+            : null
+        }
         showMemory={settings.showMemoryInTitlebar}
         memoryBytes={resourceUsage?.totalMemoryBytes ?? null}
         processCount={resourceUsage?.totalProcesses ?? null}
@@ -1027,13 +1097,51 @@ function App() {
               setPlayerOpen(moduleId === "player");
             });
         }}
-        onOpenSettings={() =>
-          setSettingsOpen((current) => {
-            if (!current) setSettingsSection("general");
-            return !current;
-          })
-        }
+        onOpenSettings={() => {
+          if (settingsOpen) {
+            setSettingsOpen(false);
+            return;
+          }
+          // Child WebViews sit above the shell page, so return to the shell first.
+          void (embedded.active ? embedded.select(null) : Promise.resolve(true)).then((switched) => {
+            if (!switched) return;
+            setSettingsSection("general");
+            setSettingsOpen(true);
+          });
+        }}
       />
+      {confirmRequest ? (
+        <div
+          className="inline-modal-backdrop app-confirm-backdrop"
+          onClick={() => answerConfirm(false)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.stopPropagation();
+              answerConfirm(false);
+            }
+          }}
+        >
+          <div className="inline-modal" role="alertdialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="inline-modal-header">
+              <h3>{confirmRequest.title}</h3>
+            </div>
+            <p className="inline-modal-body">{confirmRequest.body}</p>
+            <div className="inline-modal-actions">
+              <button type="button" className="soft-button" onClick={() => answerConfirm(false)}>
+                {messages.cancelButton}
+              </button>
+              <button
+                type="button"
+                autoFocus
+                className={confirmRequest.danger ? "danger-button" : "primary-button"}
+                onClick={() => answerConfirm(true)}
+              >
+                {messages.confirmButton}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

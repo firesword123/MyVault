@@ -10,7 +10,11 @@ mod storage;
 use crate::core::{
     apply_network_settings, default_close_behavior, ensure_vault_layout, load_settings,
 };
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
@@ -24,7 +28,28 @@ fn tray_icon_path() -> PathBuf {
         .join("icon.ico")
 }
 
+/// Set once the shell has saved its pending edits (or the fallback fired).
+static MAIN_CLOSE_READY: AtomicBool = AtomicBool::new(false);
+static MAIN_CLOSE_PENDING: AtomicBool = AtomicBool::new(false);
+const CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Asks the shell to save pending notes, then closes. A stuck page cannot keep
+/// the window open: the fallback destroys it after a short timeout.
+fn request_main_close(window: &Window) {
+    if MAIN_CLOSE_PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = window.emit("app:before-close", ());
+    let fallback = window.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(CLOSE_FLUSH_TIMEOUT);
+        MAIN_CLOSE_READY.store(true, Ordering::SeqCst);
+        let _ = fallback.destroy();
+    });
+}
+
 fn hide_window_to_tray(window: &Window) -> Result<(), String> {
+    let _ = window.emit("app:flush", ());
     window
         .hide()
         .map_err(|error| format!("failed to hide window: {error}"))?;
@@ -135,6 +160,14 @@ fn close_window(window: Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn confirm_close(window: Window) -> Result<(), String> {
+    MAIN_CLOSE_READY.store(true, Ordering::SeqCst);
+    window
+        .destroy()
+        .map_err(|error| format!("failed to close window: {error}"))
+}
+
+#[tauri::command]
 fn start_window_dragging(window: Window) -> Result<(), String> {
     window
         .start_dragging()
@@ -183,9 +216,14 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && close_behavior(window.app_handle()) == "tray" {
-                    api.prevent_close();
+                if window.label() != "main" || MAIN_CLOSE_READY.load(Ordering::SeqCst) {
+                    return;
+                }
+                api.prevent_close();
+                if close_behavior(window.app_handle()) == "tray" {
                     let _ = hide_window_to_tray(window);
+                } else {
+                    request_main_close(window);
                 }
             }
         })
@@ -226,12 +264,13 @@ pub fn run() {
             notes::trash_note,
             notes::restore_note,
             notes::delete_note,
-            notes::discard_draft_note,
+            notes::discard_empty_note,
             notes::empty_trash,
             notes::move_note,
             minimize_window,
             toggle_maximize_window,
             close_window,
+            confirm_close,
             start_window_dragging
         ])
         .build(context)

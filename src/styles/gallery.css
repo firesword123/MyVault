@@ -90,7 +90,7 @@
 .gallery-primary-button {
   color: #fff;
   background: var(--accent-strong);
-  box-shadow: 0 2px 8px rgba(107, 92, 231, 0.22);
+  box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.22);
 }
 
 .gallery-primary-button:hover {

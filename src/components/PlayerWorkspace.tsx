@@ -6,6 +6,7 @@ import type { PlayerQueueRequest } from "../types";
 type PlayerWorkspaceProps = {
   active: boolean;
   onBack: () => void;
+  onQueueChange?: (hasQueue: boolean) => void;
 };
 
 type SubtitleLine = {
@@ -77,7 +78,7 @@ function parseSubtitles(raw: string): SubtitleLine[] {
     .sort((left, right) => left.start - right.start);
 }
 
-export function PlayerWorkspace({ active, onBack }: PlayerWorkspaceProps) {
+export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspaceProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeSubtitleRef = useRef<HTMLButtonElement | null>(null);
   const shouldAutoplayRef = useRef(false);
@@ -224,6 +225,10 @@ export function PlayerWorkspace({ active, onBack }: PlayerWorkspaceProps) {
       });
     }
   }, [currentTrack?.id, playbackRevision]);
+
+  useEffect(() => {
+    onQueueChange?.(queue.length > 0);
+  }, [queue.length, onQueueChange]);
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = volume;

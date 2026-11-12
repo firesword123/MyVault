@@ -44,6 +44,7 @@ pub(crate) struct NoteSummary {
     is_trashed: bool,
     updated_at: u64,
     preview: String,
+    search_text: String,
     original_folder_path: Option<String>,
     deleted_at: Option<u64>,
 }
@@ -68,6 +69,7 @@ pub(crate) struct NoteDetail {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateNoteInput {
     title: Option<String>,
+    folder_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -109,7 +111,9 @@ pub(crate) struct MoveNoteInput {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NotesStateInput {
-    selected_note_id: String,
+    selected_note_id: Option<String>,
+    current_folder: Option<String>,
+    folder_order: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -139,17 +143,7 @@ fn now_millis() -> u64 {
 }
 
 fn sanitize_title(raw: &str) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        "Untitled Note".to_string()
-    } else {
-        trimmed.replace(['\r', '\n'], " ")
-    }
-}
-
-fn note_file_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
-    validate_note_id(id)?;
-    Ok(drafts_dir(app)?.join(format!("{id}.json")))
+    raw.trim().replace(['\r', '\n'], " ")
 }
 
 fn note_file_path_in_folder(app: &AppHandle, folder: &str, id: &str) -> Result<PathBuf, String> {
@@ -191,6 +185,14 @@ fn normalize_folder_path(folder: &str) -> Result<String, String> {
     } else {
         Err("invalid folder path".to_string())
     }
+}
+
+fn normalize_top_level_folder(folder: &str) -> Result<String, String> {
+    let normalized = normalize_folder_path(folder)?;
+    if normalized.contains('/') {
+        return Err("invalid folder path".to_string());
+    }
+    Ok(normalized)
 }
 
 fn is_system_folder(folder: &str) -> bool {
@@ -285,8 +287,34 @@ fn can_delete_note_permanently(folder: &str) -> bool {
     is_trash_folder(folder)
 }
 
-fn can_discard_draft(folder: &str) -> bool {
-    is_draft_folder(folder)
+fn can_discard_note(folder: &str, document: &NoteDocument) -> bool {
+    is_draft_folder(folder) || extract_plain_text(rich_text_html(document)).trim().is_empty()
+}
+
+/// Notes no longer have a drafts stage: new notes are created in the current
+/// folder. Notes left in the legacy `_Drafts` directory move to the inbox once.
+fn migrate_legacy_drafts(app: &AppHandle) -> Result<(), String> {
+    let drafts = drafts_dir(app)?;
+    if !drafts.is_dir() {
+        return Ok(());
+    }
+    let inbox = notes_folder_dir(app, INBOX_FOLDER)?;
+    fs::create_dir_all(&inbox).map_err(|error| format!("failed to create inbox: {error}"))?;
+    for entry in fs::read_dir(&drafts).map_err(|error| format!("failed to read drafts: {error}"))? {
+        let path = entry.map_err(|error| format!("failed to read draft entry: {error}"))?.path();
+        if !path.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(name) = path.file_name() else { continue };
+        let target = inbox.join(name);
+        if !target.exists() {
+            fs::rename(&path, &target)
+                .map_err(|error| format!("failed to migrate draft: {error}"))?;
+        }
+    }
+    // Only an empty legacy directory is removed; anything unexpected stays visible.
+    let _ = fs::remove_dir(&drafts);
+    Ok(())
 }
 
 fn find_note_path_by_id(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
@@ -334,21 +362,44 @@ fn next_note_id(app: &AppHandle) -> String {
     }
 }
 
+const BLOCK_TAGS: &[&str] = &[
+    "p", "div", "br", "li", "ul", "ol", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6",
+];
+
+/// Strips tags, keeps block boundaries as line breaks and decodes the entities
+/// the editor produces.
 fn extract_plain_text(content: &str) -> String {
     let mut output = String::with_capacity(content.len());
-    let mut in_tag = false;
+    let mut tag: Option<String> = None;
 
     for ch in content.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            '&' if !in_tag => output.push(' '),
-            _ if !in_tag => output.push(ch),
-            _ => {}
+        match (&mut tag, ch) {
+            (None, '<') => tag = Some(String::new()),
+            (Some(raw), '>') => {
+                let name: String = raw
+                    .trim_start_matches('/')
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                if BLOCK_TAGS.contains(&name.as_str()) {
+                    output.push('\n');
+                }
+                tag = None;
+            }
+            (Some(raw), _) => raw.push(ch),
+            (None, _) => output.push(ch),
         }
     }
 
     output
+        .replace("&nbsp;", " ")
+        .replace('\u{a0}', " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
 }
 
 fn preview_from_content(content: &str) -> String {
@@ -356,10 +407,15 @@ fn preview_from_content(content: &str) -> String {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .unwrap_or("Empty note")
+        .unwrap_or("")
         .chars()
         .take(120)
         .collect()
+}
+
+/// Whole-note text used by the notes search, whitespace collapsed.
+fn search_text_from_content(content: &str) -> String {
+    extract_plain_text(content).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn note_to_summary(
@@ -382,6 +438,7 @@ fn note_to_summary(
         is_trashed: is_trash_folder(&folder_path),
         updated_at: document.updated_at,
         preview: preview_from_content(rich_text_html(document)),
+        search_text: search_text_from_content(rich_text_html(document)),
         original_folder_path: document.original_folder_path.clone(),
         deleted_at: document.deleted_at,
     })
@@ -444,33 +501,26 @@ fn collect_notes(app: &AppHandle) -> Result<Vec<NoteSummary>, String> {
     Ok(items)
 }
 
+/// Notes use one level of folders. Deeper directories created outside MyVault
+/// are not listed; their notes are shown under the top-level folder.
 fn collect_folders(app: &AppHandle) -> Result<Vec<String>, String> {
     let root = notes_dir(app)?;
-    let mut directories = vec![root.clone()];
     let mut folders = Vec::new();
 
-    while let Some(current_dir) = directories.pop() {
-        let entries = fs::read_dir(&current_dir)
-            .map_err(|error| format!("failed to read folders dir: {error}"))?;
+    for entry in fs::read_dir(&root).map_err(|error| format!("failed to read folders dir: {error}"))? {
+        let entry = entry.map_err(|error| format!("failed to read folder entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
 
-        for entry in entries {
-            let entry = entry.map_err(|error| format!("failed to read folder entry: {error}"))?;
-            let path = entry.path();
+        let relative = path
+            .strip_prefix(&root)
+            .map_err(|error| format!("failed to resolve folder relative path: {error}"))?;
 
-            if !path.is_dir() {
-                continue;
-            }
-
-            let relative = path
-                .strip_prefix(&root)
-                .map_err(|error| format!("failed to resolve folder relative path: {error}"))?;
-
-            let folder = logical_notes_folder(relative);
-            if !folder.is_empty() {
-                folders.push(folder);
-            }
-
-            directories.push(path);
+        let folder = logical_notes_folder(relative);
+        if folder == TRASH_FOLDER || (!folder.is_empty() && !is_inside_system_folder(&folder)) {
+            folders.push(folder);
         }
     }
 
@@ -555,6 +605,7 @@ fn seed_default_note(app: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub(crate) fn bootstrap_app(app: AppHandle) -> Result<BootstrapPayload, String> {
     ensure_vault_layout(&app)?;
+    migrate_legacy_drafts(&app)?;
     seed_default_note(&app)?;
 
     Ok(BootstrapPayload {
@@ -572,7 +623,16 @@ pub(crate) fn update_notes_state(
 ) -> Result<AppSettings, String> {
     ensure_vault_layout(&app)?;
     let mut settings = load_settings(&app)?;
-    settings.notes_state.selected_note_id = input.selected_note_id;
+    let state = &mut settings.notes_state;
+    if let Some(value) = input.selected_note_id {
+        state.selected_note_id = value;
+    }
+    if let Some(value) = input.current_folder {
+        state.current_folder = value;
+    }
+    if let Some(value) = input.folder_order {
+        state.folder_order = value;
+    }
     save_settings_file(&app, &settings)
 }
 
@@ -600,7 +660,7 @@ pub(crate) fn create_note(app: AppHandle, input: CreateNoteInput) -> Result<Note
     ensure_vault_layout(&app)?;
 
     let ts = now_ts();
-    let title = sanitize_title(input.title.as_deref().unwrap_or("Untitled Note"));
+    let title = sanitize_title(input.title.as_deref().unwrap_or_default());
     let id = next_note_id(&app);
     let document = NoteDocument {
         format_version: NOTE_FORMAT_VERSION,
@@ -613,7 +673,14 @@ pub(crate) fn create_note(app: AppHandle, input: CreateNoteInput) -> Result<Note
         deleted_at: None,
     };
 
-    let path = note_file_path(&app, &document.id)?;
+    let folder = normalize_folder_path(input.folder_path.as_deref().unwrap_or(INBOX_FOLDER))?;
+    if is_inside_system_folder(&folder) {
+        return Err("target folder is not allowed".to_string());
+    }
+    if !notes_folder_dir(&app, &folder)?.is_dir() {
+        return Err("target folder not found".to_string());
+    }
+    let path = note_file_path_in_folder(&app, &folder, &document.id)?;
     write_note_document(&path, &document)
         .map_err(|error| format!("failed to create note: {error}"))?;
 
@@ -626,7 +693,7 @@ pub(crate) fn create_folder(
     input: CreateFolderInput,
 ) -> Result<Vec<String>, String> {
     ensure_vault_layout(&app)?;
-    let normalized = normalize_folder_path(&input.path)?;
+    let normalized = normalize_top_level_folder(&input.path)?;
     if is_inside_system_folder(&normalized) {
         return Err("cannot create inside system folder".to_string());
     }
@@ -642,7 +709,7 @@ pub(crate) fn rename_folder(
 ) -> Result<Vec<String>, String> {
     ensure_vault_layout(&app)?;
     let from_path = normalize_folder_path(&input.from_path)?;
-    let to_path = normalize_folder_path(&input.to_path)?;
+    let to_path = normalize_top_level_folder(&input.to_path)?;
 
     if is_system_folder(&from_path) || is_system_folder(&to_path) {
         return Err("system folders cannot be renamed".to_string());
@@ -835,16 +902,17 @@ pub(crate) fn delete_note(app: AppHandle, id: String) -> Result<Vec<NoteSummary>
 }
 
 #[tauri::command]
-pub(crate) fn discard_draft_note(app: AppHandle, id: String) -> Result<Vec<NoteSummary>, String> {
+pub(crate) fn discard_empty_note(app: AppHandle, id: String) -> Result<Vec<NoteSummary>, String> {
     let path = find_note_path_by_id(&app, &id)?;
     let current_folder = folder_path_from_note_path(&app, &path)?;
+    let document = load_note_document(&path)?;
 
-    if !can_discard_draft(&current_folder) {
-        return Err("note must be a draft before discarding".to_string());
+    if !can_discard_note(&current_folder, &document) {
+        return Err("only empty notes can be discarded".to_string());
     }
 
     if path.exists() {
-        fs::remove_file(path).map_err(|error| format!("failed to discard draft: {error}"))?;
+        fs::remove_file(path).map_err(|error| format!("failed to discard note: {error}"))?;
     }
 
     let notes = collect_notes(&app)?;
@@ -966,6 +1034,22 @@ mod tests {
     }
 
     #[test]
+    fn plain_text_keeps_blocks_and_decodes_entities() {
+        let html = "<h1>Title</h1><p>a&nbsp;<strong>b</strong> &amp; c</p><div>next<br>line</div>";
+        assert_eq!(preview_from_content(html), "Title");
+        assert_eq!(search_text_from_content(html), "Title a b & c next line");
+        assert_eq!(preview_from_content("<p><br></p>"), "");
+    }
+
+    #[test]
+    fn top_level_folder_rejects_nesting() {
+        assert_eq!(normalize_top_level_folder("读书").unwrap(), "读书");
+        assert_eq!(normalize_top_level_folder("/Projects/").unwrap(), "Projects");
+        assert!(normalize_top_level_folder("work/weekly").is_err());
+        assert!(normalize_top_level_folder("work\\weekly").is_err());
+    }
+
+    #[test]
     fn normalize_folder_path_rejects_invalid_segments() {
         assert_eq!(
             normalize_folder_path("projects/demo").unwrap(),
@@ -985,11 +1069,21 @@ mod tests {
     }
 
     #[test]
-    fn discard_draft_requires_drafts_folder() {
-        assert!(can_discard_draft(DRAFTS_FOLDER));
-        assert!(!can_discard_draft(INBOX_FOLDER));
-        assert!(!can_discard_draft(TRASH_FOLDER));
-        assert!(!can_discard_draft("projects/demo"));
+    fn discard_requires_empty_body_outside_legacy_drafts() {
+        let doc = |html: &str| NoteDocument {
+            format_version: NOTE_FORMAT_VERSION,
+            id: "note-1".to_string(),
+            title: "t".to_string(),
+            blocks: vec![rich_text_block("note-1", html.to_string())],
+            created_at: 0,
+            updated_at: 0,
+            original_folder_path: None,
+            deleted_at: None,
+        };
+        assert!(can_discard_note(INBOX_FOLDER, &doc("")));
+        assert!(can_discard_note("projects/demo", &doc("<p><br></p>")));
+        assert!(!can_discard_note("projects/demo", &doc("<p>hello</p>")));
+        assert!(can_discard_note(DRAFTS_FOLDER, &doc("<p>hello</p>")));
     }
 
     #[test]

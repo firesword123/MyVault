@@ -972,7 +972,7 @@
   min-height: 38px;
   border-radius: var(--control-radius);
   background: var(--accent-strong);
-  box-shadow: 0 2px 8px rgba(107, 92, 231, 0.2);
+  box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.2);
   font-size: 0.82rem;
 }
 
@@ -1055,7 +1055,7 @@
 .asmr-work-cover {
   border-radius: 11px 0 0 11px;
   background:
-    linear-gradient(135deg, rgba(107, 92, 231, 0.9), rgba(160, 92, 231, 0.72)),
+    linear-gradient(135deg, rgba(var(--accent-rgb), 0.9), rgba(var(--accent-2-rgb), 0.72)),
     var(--accent-soft);
 }
 
@@ -1201,7 +1201,7 @@
 
 .asmr-cover-placeholder {
   background:
-    linear-gradient(135deg, rgba(107, 92, 231, 0.9), rgba(160, 92, 231, 0.68)),
+    linear-gradient(135deg, rgba(var(--accent-rgb), 0.9), rgba(var(--accent-2-rgb), 0.68)),
     var(--accent-soft);
 }
 
@@ -1332,7 +1332,7 @@
 .library-sidebar .btn.primary {
   background: var(--accent-strong);
   color: #fff;
-  box-shadow: 0 2px 8px rgba(107, 92, 231, 0.25);
+  box-shadow: 0 2px 8px rgba(var(--accent-rgb), 0.25);
   flex: 1;
 }
 

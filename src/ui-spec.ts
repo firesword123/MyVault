@@ -51,8 +51,8 @@ export const appUiSpec: AppUiSpec = {
     panelBorder: "rgba(0, 0, 0, 0.08)",
     accentGradient:
       "linear-gradient(135deg, rgba(101, 132, 255, 0.12), rgba(56, 189, 248, 0.12))",
-    accentSoft: "rgba(107, 92, 231, 0.13)",
-    accentStrong: "#6b5ce7",
+    accentSoft: "rgba(43, 158, 147, 0.13)",
+    accentStrong: "#2b9e93",
     textPrimary: "#29261f",
     textMuted: "#757064",
     dangerSoft: "rgba(211, 84, 80, 0.12)",

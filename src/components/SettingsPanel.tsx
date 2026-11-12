@@ -339,7 +339,7 @@ export function SettingsPanel({
               {viewedTrashNote ? (
                 <div className="settings-trash-view">
                   <div className="settings-trash-document">
-                    <h2>{viewedTrashNote.title}</h2>
+                    <h2>{viewedTrashNote.title || messages.untitledNoteLabel}</h2>
                     <div className="editor-meta">
                       <span className="editor-meta-chip">
                         <Trash2 size={14} strokeWidth={1.7} />
@@ -379,7 +379,7 @@ export function SettingsPanel({
                   {trashNotes.map((note) => (
                     <article className="settings-trash-item" key={note.id}>
                       <div className="settings-trash-copy">
-                        <strong>{note.title}</strong>
+                        <strong>{note.title || messages.untitledNoteLabel}</strong>
                         <span>{note.relativePath}</span>
                         {note.deletedAt ? (
                           <small>{messages.trashDeletedAtLabel.replace("{time}", formatTimestamp(note.deletedAt))}</small>
@@ -422,7 +422,7 @@ export function SettingsPanel({
             <p className="settings-confirm-copy">
               {messages.deleteNotePermanentConfirmBody}
             </p>
-            <strong className="settings-confirm-note">{pendingDelete.title}</strong>
+            <strong className="settings-confirm-note">{pendingDelete.title || messages.untitledNoteLabel}</strong>
             <div className="inline-modal-actions">
               <button type="button" className="soft-button" onClick={() => setPendingDelete(null)}>
                 {messages.cancelButton}

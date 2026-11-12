@@ -5,10 +5,12 @@
   --bg-panel: #ffffff;
   --border-panel: rgba(0, 0, 0, 0.08);
   --accent-gradient: linear-gradient(135deg, rgba(101, 132, 255, 0.12), rgba(56, 189, 248, 0.12));
-  --accent-soft: rgba(107, 92, 231, 0.13);
-  --accent-strong: #6b5ce7;
-  --accent-hover: #5a4bd6;
-  --accent-text: #5747d1;
+  --accent-rgb: 43, 158, 147;
+  --accent-2-rgb: 86, 190, 150;
+  --accent-soft: rgba(43, 158, 147, 0.13);
+  --accent-strong: #2b9e93;
+  --accent-hover: #23877e;
+  --accent-text: #1d766d;
   --text-primary: #29261f;
   --text-muted: #757064;
   --text-faint: #aba596;
@@ -39,10 +41,12 @@
   --bg-shell: #191a1e !important;
   --bg-panel: #26272d !important;
   --border-panel: rgba(255, 255, 255, 0.09) !important;
-  --accent-soft: rgba(139, 124, 246, 0.18) !important;
-  --accent-strong: #8b7cf6 !important;
-  --accent-hover: #9c8ff8;
-  --accent-text: #a89bfa;
+  --accent-rgb: 77, 189, 176;
+  --accent-2-rgb: 110, 205, 160;
+  --accent-soft: rgba(77, 189, 176, 0.18) !important;
+  --accent-strong: #4dbdb0 !important;
+  --accent-hover: #63c8bc;
+  --accent-text: #7fd4c9;
   --text-primary: #e9e7e1 !important;
   --text-muted: #9c978c !important;
   --text-faint: #615e57;
@@ -121,8 +125,31 @@ button {
   flex: 1;
   height: 100%;
   cursor: grab;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.titlebar-player-action {
+  width: 132px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-panel);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: var(--bg-panel);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.titlebar-player-action:hover {
+  color: var(--text-primary);
+  border-color: var(--line-strong);
 }
 
 .titlebar-dragzone:active {
@@ -909,6 +936,18 @@ button {
   margin: 0;
   font-family: var(--font-display);
   font-size: 1rem;
+}
+
+.app-confirm-backdrop {
+  position: fixed;
+  z-index: 80;
+}
+
+.inline-modal-body {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .inline-modal-actions {

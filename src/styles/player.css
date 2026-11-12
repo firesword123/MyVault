@@ -481,7 +481,7 @@
   border-radius: 14px;
   background: var(--accent-strong);
   color: #fff;
-  box-shadow: 0 3px 10px rgba(107, 92, 231, 0.35);
+  box-shadow: 0 3px 10px rgba(var(--accent-rgb), 0.35);
   transition: all 0.15s;
 }
 

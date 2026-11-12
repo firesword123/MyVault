@@ -7,6 +7,7 @@ export type NoteSummary = {
   isTrashed: boolean;
   updatedAt: number;
   preview: string;
+  searchText: string;
   originalFolderPath: string | null;
   deletedAt: number | null;
 };
@@ -53,6 +54,8 @@ export type AppSettings = {
   noProxy: string;
   notesState: {
     selectedNoteId: string;
+    currentFolder: string;
+    folderOrder: string[];
   };
   persistentModules: string[];
   closePlayerOnPause: boolean;

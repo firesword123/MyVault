@@ -1,9 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
-import { Minus, Moon, Settings, Square, Sun, X } from "lucide-react";
+import { Minus, Moon, Pause, Settings, Square, Sun, X, XCircle } from "lucide-react";
 import appIconUrl from "../../src-tauri/icons/128x128.png";
 import type { LocaleMessages } from "../i18n";
 import type { ModuleItem } from "../ui-spec";
+
+export type TitleBarPlayerAction = {
+  label: string;
+  kind: "pause" | "close";
+  onClick: () => void;
+};
 
 type TitleBarProps = {
   brand: string;
@@ -15,6 +21,7 @@ type TitleBarProps = {
   onMinimize?: () => void;
   onClose?: () => void;
   showSettings?: boolean;
+  playerAction?: TitleBarPlayerAction | null;
   showMemory?: boolean;
   memoryBytes?: number | null;
   processCount?: number | null;
@@ -30,6 +37,7 @@ export function TitleBar({
   onMinimize,
   onClose,
   showSettings = true,
+  playerAction = null,
   showMemory = false,
   memoryBytes = null,
   processCount = null,
@@ -88,6 +96,22 @@ export function TitleBar({
           }
         }}
       >
+        {/* Fixed slot: present only while the player holds a queue. */}
+        {playerAction ? (
+          <button
+            type="button"
+            className="titlebar-player-action"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={playerAction.onClick}
+          >
+            {playerAction.kind === "close" ? (
+              <XCircle size={15} strokeWidth={1.8} />
+            ) : (
+              <Pause size={15} strokeWidth={1.8} />
+            )}
+            <span>{playerAction.label}</span>
+          </button>
+        ) : null}
         {showMemory ? (
           <span className="titlebar-memory">
             MyVault · {messages.titlebarMemoryLabel} {memoryBytes === null ? "--" : `${(memoryBytes / 1024 / 1024).toFixed(0)} MB`}
@@ -97,6 +121,11 @@ export function TitleBar({
       </div>
 
       <div className="window-controls">
+        {showSettings ? (
+          <button type="button" aria-label={messages.settingsTitle} title={messages.settingsTitle} onClick={onOpenSettings}>
+            <Settings size={16} strokeWidth={1.75} />
+          </button>
+        ) : null}
         <button
           type="button"
           className="titlebar-theme-toggle"
@@ -106,11 +135,6 @@ export function TitleBar({
         >
           {theme === "dark" ? <Sun size={16} strokeWidth={1.8} /> : <Moon size={16} strokeWidth={1.8} />}
         </button>
-        {showSettings ? (
-          <button type="button" aria-label={messages.settingsTitle} title={messages.settingsTitle} onClick={onOpenSettings}>
-            <Settings size={16} strokeWidth={1.75} />
-          </button>
-        ) : null}
         <button
           type="button"
           aria-label="Minimize"
