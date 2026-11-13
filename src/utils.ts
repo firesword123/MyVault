@@ -49,14 +49,6 @@ export function plainTextFromHtml(content: string) {
   return new DOMParser().parseFromString(marked, "text/html").body.textContent ?? "";
 }
 
-export function previewText(content: string) {
-  const line = plainTextFromHtml(content)
-    .split("\n")
-    .map((item) => item.trim())
-    .find(Boolean);
-  return (line ?? "").slice(0, 120);
-}
-
 export function searchTextFromHtml(content: string) {
   return plainTextFromHtml(content).replace(/\s+/g, " ").trim();
 }

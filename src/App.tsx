@@ -17,10 +17,10 @@ import { EditorWorkspace, NotesListPanel, orderFolders, topFolder, type SaveStat
 import { PlayerWorkspace } from "./components/PlayerWorkspace";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ShellFrame } from "./components/ShellFrame";
-import { resolveMessages } from "./i18n";
+import { resolveMessages, type LocaleMessages } from "./i18n";
 import type { AppSettings, BootstrapPayload, NoteDetail, NoteSummary, ResourceUsage, WorkspacePayload } from "./types";
 import { appUiSpec } from "./ui-spec";
-import { formatClockTime, noteRichText, noteSignature, previewText, searchTextFromHtml } from "./utils";
+import { formatClockTime, noteRichText, noteSignature, searchTextFromHtml } from "./utils";
 import { useEmbeddedModules } from "./useEmbeddedModules";
 import "./styles/global.css";
 import "./styles/notes.css";
@@ -32,8 +32,15 @@ function normalizeFolderInput(folderPath: string) {
 
 const FOLDER_RAIL_WIDTH = 62;
 
-function firstNoteInFolder(notes: NoteSummary[], folderPath: string) {
-  return notes.find((note) => !note.isTrashed && topFolder(note.folderPath) === folderPath);
+function noteMatchesQuery(note: NoteSummary, query: string) {
+  return !query || [note.title, note.searchText].some((value) => value.toLowerCase().includes(query));
+}
+
+function firstNoteInFolder(notes: NoteSummary[], folderPath: string, search = "") {
+  const query = search.trim().toLowerCase();
+  return notes.find(
+    (note) => !note.isTrashed && topFolder(note.folderPath) === folderPath && noteMatchesQuery(note, query),
+  );
 }
 
 function isBlankNoteBody(html: string) {
@@ -48,7 +55,8 @@ type ConfirmRequest = {
 };
 
 function App() {
-  const embedded = useEmbeddedModules();
+  const messagesRef = useRef<LocaleMessages>(resolveMessages(""));
+  const embedded = useEmbeddedModules(messagesRef);
   const selectEmbeddedRef = useRef(embedded.select);
   selectEmbeddedRef.current = embedded.select;
   const [settings, setSettings] = useState<AppSettings>({
@@ -76,6 +84,7 @@ function App() {
   const [searchText, setSearchText] = useState("");
   const [notesBooting, setNotesBooting] = useState(true);
   const [noteErrorMessage, setNoteErrorMessage] = useState("");
+  const [unreadableNotes, setUnreadableNotes] = useState<string[]>([]);
   const [currentFolder, setCurrentFolder] = useState("inbox");
   const [folderOrder, setFolderOrder] = useState<string[]>([]);
   const [autoFocusTitleNoteId, setAutoFocusTitleNoteId] = useState("");
@@ -105,6 +114,12 @@ function App() {
 
   const deferredSearch = useDeferredValue(searchText);
   const messages = resolveMessages(settings.language);
+  messagesRef.current = messages;
+  const unreadableNotesNotice = unreadableNotes.length
+    ? messages.unreadableNotesNotice
+        .replace("{count}", String(unreadableNotes.length))
+        .replace("{files}", unreadableNotes.slice(0, 3).join(", ") + (unreadableNotes.length > 3 ? " …" : ""))
+    : "";
   const orderedFolders = useMemo(() => orderFolders(folders, folderOrder), [folders, folderOrder]);
   const effectiveFolder = orderedFolders.includes(currentFolder) ? currentFolder : "inbox";
 
@@ -193,9 +208,7 @@ function App() {
   const { filteredNotes, matchedFolders } = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
     const live = notes.filter((note) => !note.isTrashed);
-    const hits = query
-      ? live.filter((note) => [note.title, note.searchText].some((value) => value.toLowerCase().includes(query)))
-      : live;
+    const hits = query ? live.filter((note) => noteMatchesQuery(note, query)) : live;
     return {
       filteredNotes: hits.filter((note) => topFolder(note.folderPath) === effectiveFolder),
       matchedFolders: query ? Array.from(new Set(hits.map((note) => topFolder(note.folderPath)))) : [],
@@ -271,11 +284,11 @@ function App() {
     await flushPendingDraft(note);
   }
 
+  // Search survives folder switches so the rail's hit dots stay useful.
   async function selectFolder(folderPath: string) {
-    setSearchText("");
     if (folderPath === effectiveFolder) return;
     changeCurrentFolder(folderPath);
-    const first = firstNoteInFolder(notes, folderPath);
+    const first = firstNoteInFolder(notes, folderPath, searchText);
     if (first) {
       await openNote(first.id);
     } else {
@@ -349,6 +362,7 @@ function App() {
     const payload = await invoke<WorkspacePayload>("list_workspace");
     setNotes(payload.notes);
     setFolders(payload.folders);
+    setUnreadableNotes(payload.unreadableNotes);
     return payload;
   }
 
@@ -362,6 +376,7 @@ function App() {
       setVaultPath(notesPayload.vaultPath);
       setNotes(notesPayload.notes);
       setFolders(notesPayload.folders);
+      setUnreadableNotes(notesPayload.unreadableNotes);
       const notesState = notesPayload.settings.notesState;
       setFolderOrder(notesState.folderOrder ?? []);
 
@@ -538,7 +553,6 @@ function App() {
                   folderPath: saved.folderPath,
                   isDraft: saved.isDraft,
                   isTrashed: saved.isTrashed,
-                  preview: previewText(noteRichText(saved)),
                   searchText: searchTextFromHtml(noteRichText(saved)),
                   updatedAt: saved.updatedAt,
                   originalFolderPath: saved.originalFolderPath,
@@ -1004,7 +1018,7 @@ function App() {
         }
         onRestore={() => void restoreActiveNote()}
         onDeletePermanently={() => void deleteActiveNotePermanently()}
-        errorMessage={noteErrorMessage}
+        errorMessage={noteErrorMessage || unreadableNotesNotice}
       />
 
     </div>
@@ -1021,11 +1035,12 @@ function App() {
           <>
             {notesBodyContent}
             <PlayerWorkspace
+              messages={messages}
               active={playerOpen && !embedded.active}
               onBack={() => setPlayerOpen(false)}
               onQueueChange={setPlayerHasQueue}
             />
-            {embedded.active && <div className="embedded-placeholder">正在加载独立 WebView…</div>}
+            {embedded.active && <div className="embedded-placeholder">{messages.embeddedLoadingLabel}</div>}
           </>
         }
         settingsPanel={

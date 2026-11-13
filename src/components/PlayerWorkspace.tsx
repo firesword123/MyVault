@@ -1,9 +1,28 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PlayerQueueRequest } from "../types";
+import type { LocaleMessages } from "../i18n";
+import type { PlayerQueueRequest, PlayerTrack } from "../types";
+
+/** Progress is written while playing at most this often, and always on pause/switch/close. */
+const PROGRESS_SAVE_INTERVAL_S = 15;
+/** Resuming within the last seconds of a track would only replay its tail. */
+const RESUME_TAIL_GUARD_S = 5;
+
+function savePlaybackProgress(track: PlayerTrack, seconds: number) {
+  void invoke("update_asmr_playback", {
+    input: {
+      rjId: track.workId,
+      audioPath: track.relativePath,
+      positionMs: Math.max(0, Math.round(seconds * 1000)),
+    },
+  }).catch(() => {
+    // Progress is a convenience; playback must not fail because of it.
+  });
+}
 
 type PlayerWorkspaceProps = {
+  messages: LocaleMessages;
   active: boolean;
   onBack: () => void;
   onQueueChange?: (hasQueue: boolean) => void;
@@ -78,10 +97,14 @@ function parseSubtitles(raw: string): SubtitleLine[] {
     .sort((left, right) => left.start - right.start);
 }
 
-export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspaceProps) {
+export function PlayerWorkspace({ messages, active, onBack, onQueueChange }: PlayerWorkspaceProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeSubtitleRef = useRef<HTMLButtonElement | null>(null);
   const shouldAutoplayRef = useRef(false);
+  // The track whose file is currently loaded, and where to resume it once metadata arrives.
+  const loadedTrackRef = useRef<PlayerTrack | null>(null);
+  const pendingSeekRef = useRef<number | null>(null);
+  const lastSavedAtRef = useRef(0);
   const [queue, setQueue] = useState<PlayerQueueRequest["tracks"]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [playbackRevision, setPlaybackRevision] = useState(0);
@@ -103,9 +126,19 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
     [position, subtitles],
   );
 
+  function saveLoadedProgress(seconds?: number) {
+    const audio = audioRef.current;
+    const track = loadedTrackRef.current;
+    if (!audio || !track || !audio.getAttribute("src")) return;
+    lastSavedAtRef.current = audio.currentTime;
+    savePlaybackProgress(track, seconds ?? (audio.ended ? 0 : audio.currentTime));
+  }
+
   function releaseMedia() {
     const audio = audioRef.current;
     if (!audio) return;
+    saveLoadedProgress();
+    loadedTrackRef.current = null;
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
@@ -114,6 +147,7 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
   function applyQueue(payload: PlayerQueueRequest) {
     if (!payload.tracks.length) return;
     shouldAutoplayRef.current = true;
+    pendingSeekRef.current = payload.startPositionMs ? payload.startPositionMs / 1000 : null;
     setQueue(payload.tracks);
     setCurrentIndex(Math.min(Math.max(payload.startIndex, 0), payload.tracks.length - 1));
     setPlaybackRevision((current) => current + 1);
@@ -214,6 +248,9 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !currentTrack) return;
+    saveLoadedProgress();
+    loadedTrackRef.current = currentTrack;
+    lastSavedAtRef.current = 0;
     audio.src = convertFileSrc(currentTrack.absolutePath);
     audio.load();
     setPosition(0);
@@ -269,11 +306,11 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
             <line x1="19" y1="12" x2="5" y2="12" />
             <polyline points="12 19 5 12 12 5" />
           </svg>
-          返回笔记
+          {messages.playerBackToNotes}
         </button>
         <div className="pl-head">
-          <span className="pl-title">播放列表</span>
-          <button type="button" className="icon-btn pl-clear" onClick={stopAndClear} disabled={!queue.length} title="清空列表">
+          <span className="pl-title">{messages.playerPlaylist}</span>
+          <button type="button" className="icon-btn pl-clear" onClick={stopAndClear} disabled={!queue.length} title={messages.playerClearQueue}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M3 6h18" />
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
@@ -303,8 +340,8 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
                 <line x1="8" y1="18" x2="16" y2="18" />
                 <path d="M3 6h.01M3 12h.01M3 18h.01" strokeWidth="2.4" />
               </svg>
-              <h3>播放列表为空</h3>
-              <p>从音声作品浏览器选择音频</p>
+              <h3>{messages.playerEmptyTitle}</h3>
+              <p>{messages.playerEmptyBody}</p>
             </div>
           )}
         </nav>
@@ -313,14 +350,14 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
       <main className="player-content">
         <header className="now-head">
           <div className="nh-left">
-            <div className="nh-flag">正在播放 · <span>{currentTrack?.workId ?? "未选择"}</span></div>
-            <div className="nh-title">{currentTrack?.title ?? "选择一首音频开始播放"}</div>
+            <div className="nh-flag">{messages.playerNowPlaying} · <span>{currentTrack?.workId ?? messages.playerNoSelection}</span></div>
+            <div className="nh-title">{currentTrack?.title ?? messages.playerPickTrack}</div>
             <div className="nh-sub">
               {currentTrack
                 ? subtitles.length
-                  ? `共 ${subtitles.length} 条字幕`
-                  : "该曲目暂无字幕"
-                : "字幕将在这里与播放进度同步显示"}
+                  ? messages.playerSubtitleCount.replace("{count}", String(subtitles.length))
+                  : messages.playerNoSubtitle
+                : messages.playerSubtitleHint}
             </div>
           </div>
           <button
@@ -336,7 +373,7 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
               <circle cx="12" cy="12" r="7" />
               <circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none" />
             </svg>
-            当前字幕
+            {messages.playerCurrentSubtitle}
           </button>
         </header>
 
@@ -364,8 +401,8 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
                 <path d="M3 15h6" />
                 <path d="M15 9v10" />
               </svg>
-              <h3>{currentTrack ? "该曲目暂无字幕" : "等待播放"}</h3>
-              <p>{subtitleError ? `字幕读取失败：${subtitleError}` : "支持 VTT、SRT、LRC、ASS 与 SSA"}</p>
+              <h3>{currentTrack ? messages.playerNoSubtitle : messages.playerWaiting}</h3>
+              <p>{subtitleError ? messages.playerSubtitleReadFailed.replace("{error}", subtitleError) : messages.playerSubtitleFormats}</p>
             </div>
           )}
         </section>
@@ -380,7 +417,7 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
               </div>
               <input
                 className="seek-input"
-                aria-label="播放进度"
+                aria-label={messages.playerProgress}
                 type="range"
                 min={0}
                 max={duration || 0}
@@ -394,24 +431,24 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
           </div>
           <div className="t-row2">
             <div className="t-ctr">
-              <button type="button" className="tc-btn" onClick={() => playAt(currentIndex - 1)} disabled={currentIndex <= 0} title="上一首">
+              <button type="button" className="tc-btn" onClick={() => playAt(currentIndex - 1)} disabled={currentIndex <= 0} title={messages.playerPrevious}>
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 20 L9 12 L19 4 Z" /><rect x="5" y="4" width="2.4" height="16" rx="1" /></svg>
               </button>
-              <button type="button" className="tc-btn" onClick={() => seekTo(position - 5)} disabled={!currentTrack} title="后退 5 秒">
+              <button type="button" className="tc-btn" onClick={() => seekTo(position - 5)} disabled={!currentTrack} title={messages.playerBack5}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
                 <span className="tc-num">5</span>
               </button>
-              <button type="button" className={`tc-btn tc-main ${isPlaying ? "playing" : ""}`} onClick={togglePlayback} disabled={!currentTrack} title="播放 / 暂停">
+              <button type="button" className={`tc-btn tc-main ${isPlaying ? "playing" : ""}`} onClick={togglePlayback} disabled={!currentTrack} title={messages.playerPlayPause}>
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path className="play-ic" d="M8 5.5 L19 12 L8 18.5 Z" />
                   <g className="pause-ic"><rect x="7" y="5.5" width="3.4" height="13" rx="1" /><rect x="13.6" y="5.5" width="3.4" height="13" rx="1" /></g>
                 </svg>
               </button>
-              <button type="button" className="tc-btn" onClick={() => seekTo(position + 30)} disabled={!currentTrack} title="前进 30 秒">
+              <button type="button" className="tc-btn" onClick={() => seekTo(position + 30)} disabled={!currentTrack} title={messages.playerForward30}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7l3 2.7" /><path d="M21 3v5h-5" /></svg>
                 <span className="tc-num">30</span>
               </button>
-              <button type="button" className="tc-btn" onClick={() => playAt(currentIndex + 1)} disabled={!queue.length || currentIndex >= queue.length - 1} title="下一首">
+              <button type="button" className="tc-btn" onClick={() => playAt(currentIndex + 1)} disabled={!queue.length || currentIndex >= queue.length - 1} title={messages.playerNext}>
                 <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 4 L15 12 L5 20 Z" /><rect x="16.6" y="4" width="2.4" height="16" rx="1" /></svg>
               </button>
             </div>
@@ -430,19 +467,38 @@ export function PlayerWorkspace({ active, onBack, onQueueChange }: PlayerWorkspa
               <span className="vol-pct">{Math.round(volume * 100)}%</span>
             </label>
           </div>
-          {errorMessage ? <p className="player-error">播放失败：{errorMessage}</p> : null}
+          {errorMessage ? <p className="player-error">{messages.playerFailed.replace("{error}", errorMessage)}</p> : null}
           <audio
             ref={audioRef}
             onPlay={() => setIsPlaying(true)}
-            onPause={() => setIsPlaying(false)}
-            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+            onPause={() => {
+              setIsPlaying(false);
+              saveLoadedProgress();
+            }}
+            onLoadedMetadata={(event) => {
+              const audio = event.currentTarget;
+              setDuration(audio.duration);
+              const seek = pendingSeekRef.current;
+              pendingSeekRef.current = null;
+              if (seek && (!Number.isFinite(audio.duration) || seek < audio.duration - RESUME_TAIL_GUARD_S)) {
+                audio.currentTime = seek;
+                setPosition(seek);
+              }
+            }}
             onDurationChange={(event) => setDuration(event.currentTarget.duration)}
-            onTimeUpdate={(event) => setPosition(event.currentTarget.currentTime)}
+            onTimeUpdate={(event) => {
+              const seconds = event.currentTarget.currentTime;
+              setPosition(seconds);
+              if (!event.currentTarget.paused && Math.abs(seconds - lastSavedAtRef.current) >= PROGRESS_SAVE_INTERVAL_S) {
+                saveLoadedProgress(seconds);
+              }
+            }}
             onEnded={() => {
+              saveLoadedProgress(0);
               if (currentIndex < queue.length - 1) playAt(currentIndex + 1);
               else setIsPlaying(false);
             }}
-            onError={() => setErrorMessage("当前音频格式无法由 WebView2 解码")}
+            onError={() => setErrorMessage(messages.playerDecodeError)}
           />
         </footer>
       </main>

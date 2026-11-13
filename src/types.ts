@@ -6,7 +6,6 @@ export type NoteSummary = {
   isDraft: boolean;
   isTrashed: boolean;
   updatedAt: number;
-  preview: string;
   searchText: string;
   originalFolderPath: string | null;
   deletedAt: number | null;
@@ -36,12 +35,15 @@ export type BootstrapPayload = {
   vaultPath: string;
   notes: NoteSummary[];
   folders: string[];
+  /** Note files skipped because they could not be parsed, relative to the notes root. */
+  unreadableNotes: string[];
   settings: AppSettings;
 };
 
 export type WorkspacePayload = {
   notes: NoteSummary[];
   folders: string[];
+  unreadableNotes: string[];
 };
 
 export type AppSettings = {
@@ -157,5 +159,7 @@ export type PlayerTrack = {
 export type PlayerQueueRequest = {
   source: "dl_asmr";
   startIndex: number;
+  /** Resume offset for the start track, from the work's saved progress. */
+  startPositionMs?: number;
   tracks: PlayerTrack[];
 };

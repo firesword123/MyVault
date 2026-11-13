@@ -20,7 +20,7 @@ static RESOURCE_SYSTEM: OnceLock<Mutex<System>> = OnceLock::new();
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AppSettings {
     #[serde(default = "default_language")]
-    language: String,
+    pub(crate) language: String,
     #[serde(default = "default_show_note_time")]
     show_note_time: bool,
     #[serde(default = "default_close_behavior")]

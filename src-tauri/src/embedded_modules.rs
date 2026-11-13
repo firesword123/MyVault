@@ -120,9 +120,17 @@ pub(crate) async fn switch_embedded_module(
         let data_directory = state.webview_root.join(&module);
         std::fs::create_dir_all(&data_directory).map_err(|e| e.to_string())?;
         let window = app.get_window("main").ok_or("main window is unavailable")?;
+        // Child profiles share no storage with the shell, so the UI language travels in the URL.
+        let language = crate::core::load_settings(&app)
+            .map(|settings| settings.language)
+            .unwrap_or_default();
+        let language: String = language
+            .chars()
+            .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+            .collect();
         let builder = WebviewBuilder::new(
             label,
-            WebviewUrl::App(format!("{module}.html?embedded=1").into()),
+            WebviewUrl::App(format!("{module}.html?embedded=1&lang={language}").into()),
         )
         .data_directory(data_directory)
         .disable_drag_drop_handler();

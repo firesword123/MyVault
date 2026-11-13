@@ -788,7 +788,6 @@ export function NotesListPanel({
                 <strong className={note.title ? "" : "is-untitled"}>{note.title || messages.untitledNoteLabel}</strong>
                 {showTime ? <span>{formatTimestamp(note.updatedAt)}</span> : null}
               </div>
-              {note.preview ? <span className="note-row-preview">{note.preview}</span> : null}
             </button>
           ))}
 

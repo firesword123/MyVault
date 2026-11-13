@@ -5,7 +5,7 @@ use std::{
     fs,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::UNIX_EPOCH,
 };
 use tauri::{AppHandle, State};
@@ -38,7 +38,7 @@ struct GalleryRecord {
 
 #[derive(Default)]
 pub(crate) struct GalleryState {
-    catalog: Mutex<Option<Vec<GalleryRecord>>>,
+    catalog: Mutex<Option<Arc<Vec<GalleryRecord>>>>,
     visible_thumbnail_ids: Mutex<HashSet<String>>,
 }
 
@@ -214,18 +214,20 @@ fn retire_legacy_thumbnail_cache(cache: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn load_catalog(app: &AppHandle, state: &GalleryState) -> Result<Vec<GalleryRecord>, String> {
+/// Returns a shared handle; page requests must not copy the whole catalog.
+fn load_catalog(app: &AppHandle, state: &GalleryState) -> Result<Arc<Vec<GalleryRecord>>, String> {
     let mut slot = state
         .catalog
         .lock()
         .map_err(|_| "gallery catalog is poisoned".to_string())?;
     if let Some(records) = slot.as_ref() {
-        return Ok(records.clone());
+        return Ok(Arc::clone(records));
     }
     let root = crate::core::gallery_dir(app)?;
     let records = scan_gallery(&root)?;
     retire_legacy_thumbnail_cache(&crate::core::gallery_cache_dir(app)?)?;
-    *slot = Some(records.clone());
+    let records = Arc::new(records);
+    *slot = Some(Arc::clone(&records));
     Ok(records)
 }
 

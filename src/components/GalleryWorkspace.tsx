@@ -14,6 +14,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { LocaleMessages } from "../i18n";
 import { useEmbeddedGuard } from "../useEmbeddedGuard";
 
 type GalleryItem = {
@@ -56,7 +57,7 @@ const MASONRY_GAP = 16;
 const CARD_TEXT_HEIGHT = 40;
 const IMAGE_FILTERS = [
   {
-    name: "图片",
+    name: "Images",
     extensions: ["jpg", "jpeg", "png", "gif", "webp", "bmp"],
   },
 ];
@@ -92,11 +93,11 @@ function distributeItems(items: GalleryItem[], columnCount: number, columnWidth:
   return columns;
 }
 
-export function GalleryWorkspace() {
+export function GalleryWorkspace({ messages }: { messages: LocaleMessages }) {
   const [payload, setPayload] = useState<GalleryPage | null>(null);
   const [preview, setPreview] = useState<GalleryItem | null>(null);
   const [busy, setBusy] = useState(true);
-  const [message, setMessage] = useState("正在加载图库…");
+  const [message, setMessage] = useState(messages.galleryLoading);
   const [targetWidth, setTargetWidth] = useState(storedThumbnailSize);
   const contentRef = useRef<HTMLElement | null>(null);
   const requestId = useRef(0);
@@ -104,7 +105,7 @@ export function GalleryWorkspace() {
   const currentPage = useRef(1);
   const anchorPath = useRef<string | null>(null);
   const layout = useRef<LayoutMetrics | null>(null);
-  useEmbeddedGuard(busy ? "图库仍在加载或导入，请完成后再切换" : null);
+  useEmbeddedGuard(busy ? messages.galleryBusyGuard : null);
 
   const loadPage = useCallback(async (
     page: number,
@@ -130,7 +131,7 @@ export function GalleryWorkspace() {
       setPayload(next);
       currentPage.current = next.page;
       anchorPath.current = next.items[0]?.relativePath ?? null;
-      setMessage(next.totalItems > 0 ? `共 ${next.totalItems} 张图片` : "图库中还没有图片");
+      setMessage(next.totalItems > 0 ? messages.galleryCount.replace("{count}", String(next.totalItems)) : messages.galleryEmpty);
     } catch (error) {
       if (currentRequest !== requestId.current) return;
       setMessage(error instanceof Error ? error.message : String(error));
@@ -218,12 +219,12 @@ export function GalleryWorkspace() {
   async function importPaths(paths: string[]) {
     if (paths.length === 0) return;
     setBusy(true);
-    setMessage("正在导入图片…");
+    setMessage(messages.galleryImporting);
     try {
       const result = await invoke<ImportResult>("import_gallery", { input: { paths } });
-      const skipped = result.skipped > 0 ? `，跳过 ${result.skipped} 项` : "";
+      const skipped = result.skipped > 0 ? messages.gallerySkipped.replace("{count}", String(result.skipped)) : "";
       await loadPage(1, false, layout.current, null);
-      setMessage(`已导入 ${result.imported} 张图片${skipped}`);
+      setMessage(messages.galleryImported.replace("{count}", String(result.imported)) + skipped);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
       setBusy(false);
@@ -231,7 +232,7 @@ export function GalleryWorkspace() {
   }
 
   async function chooseImages() {
-    const selection = await open({ multiple: true, directory: false, filters: IMAGE_FILTERS });
+    const selection = await open({ multiple: true, directory: false, filters: IMAGE_FILTERS.map((filter) => ({ ...filter, name: messages.galleryImagesFilter })) });
     await importPaths(selectedPaths(selection));
   }
 
@@ -274,26 +275,26 @@ export function GalleryWorkspace() {
         <div className="gallery-heading">
           <span className="gallery-heading-icon"><Images size={18} /></span>
           <div>
-            <h1>图库</h1>
+            <h1>{messages.galleryTitle}</h1>
             <p>{message}</p>
           </div>
         </div>
         <div className="gallery-actions">
           <button type="button" className="gallery-secondary-button" disabled={busy || !payload} onClick={() => void openGalleryFolder()}>
             <FolderOpen size={15} />
-            打开图库目录
+            {messages.galleryOpenFolder}
           </button>
           <button type="button" className="gallery-secondary-button" disabled={busy} onClick={() => void loadPage(currentPage.current, true)}>
             <RefreshCw size={15} />
-            刷新
+            {messages.refreshButton}
           </button>
           <button type="button" className="gallery-secondary-button" disabled={busy} onClick={() => void chooseFolder()}>
             <FolderInput size={15} />
-            导入文件夹
+            {messages.galleryImportFolder}
           </button>
           <button type="button" className="gallery-primary-button" disabled={busy} onClick={() => void chooseImages()}>
             <FilePlus2 size={15} />
-            导入图片
+            {messages.galleryImportImages}
           </button>
         </div>
       </header>
@@ -331,15 +332,15 @@ export function GalleryWorkspace() {
         ) : !busy ? (
           <div className="gallery-empty">
             <Images size={38} strokeWidth={1.4} />
-            <h2>导入第一批图片</h2>
-            <p>图片将复制到 MyVaultData/Gallery，原文件不会被修改。</p>
+            <h2>{messages.galleryEmptyTitle}</h2>
+            <p>{messages.galleryEmptyBody}</p>
             <button type="button" className="gallery-primary-button" onClick={() => void chooseImages()}>
               <FilePlus2 size={16} />
-              选择图片
+              {messages.gallerySelectImages}
             </button>
           </div>
         ) : null}
-        {busy ? <div className="gallery-loading">处理中…</div> : null}
+        {busy ? <div className="gallery-loading">{messages.galleryProcessing}</div> : null}
       </section>
 
       {payload ? (
@@ -348,7 +349,7 @@ export function GalleryWorkspace() {
           <div className="gallery-pager">
             <button
               type="button"
-              aria-label="上一页"
+              aria-label={messages.previousPage}
               disabled={busy || payload.page <= 1}
               onClick={() => void loadPage(payload.page - 1)}
             >
@@ -357,14 +358,14 @@ export function GalleryWorkspace() {
             <span>{payload.page} / {payload.totalPages}</span>
             <button
               type="button"
-              aria-label="下一页"
+              aria-label={messages.nextPage}
               disabled={busy || payload.page >= payload.totalPages}
               onClick={() => void loadPage(payload.page + 1)}
             >
               <ChevronRight size={16} />
             </button>
           </div>
-          <label className="gallery-size-control" title={`缩略图大小：${targetWidth}px`}>
+          <label className="gallery-size-control" title={messages.galleryThumbSizeValue.replace("{size}", String(targetWidth))}>
             <ZoomOut size={14} />
             <input
               type="range"
@@ -372,7 +373,7 @@ export function GalleryWorkspace() {
               max={SIZE_MAX}
               step={SIZE_STEP}
               value={targetWidth}
-              aria-label="缩略图大小"
+              aria-label={messages.galleryThumbSize}
               onChange={(event) => changeTargetWidth(Number(event.target.value))}
             />
             <ZoomIn size={15} />
@@ -382,7 +383,7 @@ export function GalleryWorkspace() {
 
       {preview ? (
         <div className="gallery-preview" role="dialog" aria-modal="true" aria-label={preview.fileName}>
-          <button type="button" className="gallery-preview-close" aria-label="关闭预览" onClick={() => setPreview(null)}>
+          <button type="button" className="gallery-preview-close" aria-label={messages.galleryClosePreview} onClick={() => setPreview(null)}>
             <X size={20} />
           </button>
           <img src={convertFileSrc(preview.originalPath)} alt={preview.fileName} draggable={false} />
@@ -393,7 +394,7 @@ export function GalleryWorkspace() {
             </div>
             <button type="button" className="gallery-preview-explorer-button" onClick={() => void revealPreviewedImage()}>
               <FolderOpen size={16} />
-              在资源管理器中显示
+              {messages.galleryRevealInExplorer}
             </button>
           </div>
         </div>

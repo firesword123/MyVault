@@ -137,24 +137,24 @@ export function TitleBar({
         </button>
         <button
           type="button"
-          aria-label="Minimize"
-          title="Minimize"
+          aria-label={messages.windowMinimize}
+          title={messages.windowMinimize}
           onClick={() => (onMinimize ? onMinimize() : void invoke("minimize_window"))}
         >
           <Minus size={16} strokeWidth={1.75} />
         </button>
         <button
           type="button"
-          aria-label="Maximize"
-          title="Maximize"
+          aria-label={messages.windowMaximize}
+          title={messages.windowMaximize}
           onClick={() => void invoke("toggle_maximize_window")}
         >
           <Square size={13} strokeWidth={1.8} />
         </button>
         <button
           type="button"
-          aria-label="Close"
-          title="Close"
+          aria-label={messages.windowClose}
+          title={messages.windowClose}
           className="is-close"
           onClick={() => (onClose ? onClose() : void invoke("close_window"))}
         >

@@ -313,12 +313,12 @@ fn reconcile_asmr_index(app: &AppHandle, index: &mut AsmrIndex) -> Result<(), St
     reconcile_asmr_index_at(&data_root_dir(app)?, index)
 }
 
-fn load_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
+/// Parses the stored index without touching the library. Mutating commands use
+/// this; the full disk reconcile runs only from `bootstrap_asmr`.
+fn read_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
     let path = asmr_index_path(app)?;
     if !path.exists() {
-        let index = default_asmr_index();
-        save_asmr_index(app, &index)?;
-        return Ok(index);
+        return Ok(default_asmr_index());
     }
 
     let raw =
@@ -340,10 +340,16 @@ fn load_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
         }
     };
     normalize_asmr_index(&mut index);
+    Ok(index)
+}
+
+/// Startup / refresh path: repairs, reconciles with disk and rewrites all metadata.
+fn load_reconciled_asmr_index(app: &AppHandle) -> Result<AsmrIndex, String> {
+    let mut index = read_asmr_index(app)?;
     let repair = run_0_1_10_path_repair(app, &mut index)?;
     reconcile_asmr_index(app, &mut index)?;
     let cover_migration = migrate_legacy_cover_storage(app, &mut index)?;
-    save_asmr_index(app, &index)?;
+    save_asmr_index(app, &index, WorkWrites::All)?;
     if let Some(report) = cover_migration {
         write_cover_storage_migration_report(app, &report)?;
     }
@@ -719,14 +725,24 @@ fn write_cover_storage_migration_report(
         .map_err(|error| format!("failed to save cover storage migration report: {error}"))
 }
 
-fn save_asmr_index(app: &AppHandle, index: &AsmrIndex) -> Result<(), String> {
+/// Which per-work `_Work.json` files a save rewrites besides the index itself.
+#[derive(Clone, Copy)]
+enum WorkWrites<'a> {
+    All,
+    Only(&'a str),
+}
+
+fn save_asmr_index(app: &AppHandle, index: &AsmrIndex, writes: WorkWrites) -> Result<(), String> {
     let mut normalized = index.clone();
     normalize_asmr_index(&mut normalized);
     let raw = serde_json::to_string_pretty(&normalized)
         .map_err(|error| format!("failed to serialize asmr index: {error}"))?;
     atomic_write_utf8_file(&asmr_index_path(app)?, &raw)
         .map_err(|error| format!("failed to save DL_ASMR index: {error}"))?;
-    for work in &normalized.works {
+    for work in normalized.works.iter().filter(|work| match writes {
+        WorkWrites::All => true,
+        WorkWrites::Only(rj_id) => work.rj_id == rj_id,
+    }) {
         let work_dir = stored_path(app, &work.work_dir)?;
         fs::create_dir_all(&work_dir)
             .map_err(|error| format!("failed to create DL_ASMR work directory: {error}"))?;
@@ -1347,7 +1363,7 @@ pub(crate) fn bootstrap_asmr(app: AppHandle) -> Result<AsmrBootstrapPayload, Str
         .lock()
         .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
-    let index = load_asmr_index(&app)?;
+    let index = load_reconciled_asmr_index(&app)?;
     Ok(AsmrBootstrapPayload {
         works: index
             .works
@@ -1377,7 +1393,7 @@ pub(crate) fn preview_asmr_import(
         Some(value) if !value.trim().is_empty() => normalize_rj_id(&value)?,
         _ => extract_rj_id_from_path(&source).ok_or_else(|| "RJ id is required".to_string())?,
     };
-    let index = load_asmr_index(&app)?;
+    let index = read_asmr_index(&app)?;
     let stats = scan_asmr_import_source(&source)?;
 
     Ok(AsmrImportPreview {
@@ -1433,7 +1449,7 @@ pub(crate) fn import_asmr_work(
         _ => extract_rj_id_from_path(&source).ok_or_else(|| "RJ id is required".to_string())?,
     };
 
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     let previous_index = index.clone();
     let existing_work = index.works.iter().find(|work| work.rj_id == rj_id).cloned();
     let overwrite = input.overwrite.unwrap_or(false);
@@ -1593,7 +1609,7 @@ pub(crate) fn import_asmr_work(
 
     index.works.retain(|item| item.rj_id != rj_id);
     index.works.push(work.clone());
-    if let Err(error) = save_asmr_index(&app, &index) {
+    if let Err(error) = save_asmr_index(&app, &index, WorkWrites::Only(&rj_id)) {
         if staged_transfer == StagedTransfer::Renamed {
             let _ = fs::rename(&work_dir, &source);
         } else {
@@ -1602,7 +1618,7 @@ pub(crate) fn import_asmr_work(
         if let Some(backup) = backup_path.as_ref() {
             let _ = fs::rename(backup, &work_dir);
         }
-        let _ = save_asmr_index(&app, &previous_index);
+        let _ = save_asmr_index(&app, &previous_index, WorkWrites::Only(&rj_id));
         return Err(error);
     }
 
@@ -1613,10 +1629,8 @@ pub(crate) fn import_asmr_work(
                 source_removed = true;
                 None
             }
-            Err(error) => Some(format!(
-                "作品已导入，但无法完整清理原目录 {}：{error}",
-                source.display()
-            )),
+            // Detail only; the UI wraps it in a localized sentence.
+            Err(error) => Some(format!("{}: {error}", source.display())),
         }
     } else {
         None
@@ -1640,7 +1654,7 @@ pub(crate) fn update_asmr_work(
         .map_err(|_| "asmr command lock is poisoned")?;
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     let work = index
         .works
         .iter_mut()
@@ -1658,7 +1672,7 @@ pub(crate) fn update_asmr_work(
     work.updated_at = now_ts();
 
     let updated = work.clone();
-    save_asmr_index(&app, &index)?;
+    save_asmr_index(&app, &index, WorkWrites::Only(&rj_id))?;
     hydrate_work(&app, &updated)
 }
 
@@ -1676,7 +1690,7 @@ pub(crate) fn upsert_asmr_dictionary(
         return Err("dictionary value is required".to_string());
     }
 
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     {
         let values = dictionary_values_mut(&mut index.dictionaries, &input.kind)?;
         if let Some(old_value) = input
@@ -1694,8 +1708,9 @@ pub(crate) fn upsert_asmr_dictionary(
             values.push(value);
         }
     }
-    save_asmr_index(&app, &index)?;
-    asmr_payload_from_index(&app, load_asmr_index(&app)?)
+    normalize_asmr_index(&mut index);
+    save_asmr_index(&app, &index, WorkWrites::All)?;
+    asmr_payload_from_index(&app, index)
 }
 
 #[tauri::command(async)]
@@ -1712,7 +1727,7 @@ pub(crate) fn delete_asmr_dictionary(
         return Err("dictionary value is required".to_string());
     }
 
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     {
         let values = dictionary_values_mut(&mut index.dictionaries, &input.kind)?;
         values.retain(|item| item != &value);
@@ -1720,8 +1735,9 @@ pub(crate) fn delete_asmr_dictionary(
     for work in &mut index.works {
         delete_asmr_work_dictionary_value(work, &input.kind, &value);
     }
-    save_asmr_index(&app, &index)?;
-    asmr_payload_from_index(&app, load_asmr_index(&app)?)
+    normalize_asmr_index(&mut index);
+    save_asmr_index(&app, &index, WorkWrites::All)?;
+    asmr_payload_from_index(&app, index)
 }
 
 #[tauri::command(async)]
@@ -1735,7 +1751,7 @@ pub(crate) fn list_asmr_folder(
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let folder_path = validate_relative_path(&input.folder_path)?;
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     let root = indexed_work_files_dir(&app, &index, &rj_id)?;
     let folder = if folder_path.is_empty() {
         root.clone()
@@ -1754,7 +1770,7 @@ pub(crate) fn list_asmr_folder(
             Some(folder_path.clone())
         };
         work.updated_at = now_ts();
-        save_asmr_index(&app, &index)?;
+        save_asmr_index(&app, &index, WorkWrites::Only(&rj_id))?;
     }
 
     let mut items = Vec::new();
@@ -1835,7 +1851,7 @@ pub(crate) fn update_asmr_playback(
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let audio_path = validate_relative_path(&input.audio_path)?;
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     let work = index
         .works
         .iter_mut()
@@ -1845,7 +1861,7 @@ pub(crate) fn update_asmr_playback(
     work.last_position_ms = input.position_ms;
     work.updated_at = now_ts();
     let updated = work.clone();
-    save_asmr_index(&app, &index)?;
+    save_asmr_index(&app, &index, WorkWrites::Only(&rj_id))?;
     hydrate_work(&app, &updated)
 }
 
@@ -1867,7 +1883,7 @@ pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result
     if is_legacy_cover_name(&file_name) {
         return Err("legacy _Cover files cannot be selected as cover".to_string());
     }
-    let mut index = load_asmr_index(&app)?;
+    let mut index = read_asmr_index(&app)?;
     let work_dir = indexed_work_files_dir(&app, &index, &rj_id)?;
     let source = work_dir.join(&relative_path);
     if !source.is_file() || !is_supported_image_file(&source) {
@@ -1890,7 +1906,7 @@ pub(crate) fn set_asmr_cover(app: AppHandle, input: SetAsmrCoverInput) -> Result
     work.thumbnail_path = None;
     work.updated_at = now_ts();
     let updated = work.clone();
-    save_asmr_index(&app, &index)?;
+    save_asmr_index(&app, &index, WorkWrites::Only(&rj_id))?;
     hydrate_work(&app, &updated)
 }
 
@@ -1905,7 +1921,7 @@ pub(crate) fn read_asmr_text_file(
     ensure_asmr_layout(&app)?;
     let rj_id = normalize_rj_id(&input.rj_id)?;
     let relative_path = validate_relative_path(&input.relative_path)?;
-    let index = load_asmr_index(&app)?;
+    let index = read_asmr_index(&app)?;
     let root = indexed_work_files_dir(&app, &index, &rj_id)?;
     let path = root.join(&relative_path);
     let extension = path

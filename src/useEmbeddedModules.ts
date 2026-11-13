@@ -1,16 +1,18 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { LocaleMessages } from "./i18n";
 
 export type EmbeddedModule = "asmr" | "gallery";
 
-function contentBounds() {
+function contentBounds(messages?: LocaleMessages) {
   const element = document.querySelector(".window-shell > .app-body");
-  if (!element) throw new Error("找不到模块内容区域");
+  if (!element) throw new Error(messages?.embeddedBoundsMissing ?? "Module content area not found");
   const { x, y, width, height } = element.getBoundingClientRect();
   return { x, y, width, height };
 }
 
-export function useEmbeddedModules() {
+/** `messagesRef` is read at call time so the hook can run before the shell resolves its language. */
+export function useEmbeddedModules(messagesRef: RefObject<LocaleMessages>) {
   const [active, setActive] = useState<EmbeddedModule | null>(null);
   const [busy, setBusy] = useState(false);
   const switching = useRef(false);
@@ -20,7 +22,7 @@ export function useEmbeddedModules() {
     switching.current = true;
     setBusy(true);
     try {
-      await invoke("switch_embedded_module", { module, bounds: contentBounds() });
+      await invoke("switch_embedded_module", { module, bounds: contentBounds(messagesRef.current) });
       setActive(module);
       // Resizing can happen while WebView2 is starting. Apply the latest bounds.
       await invoke("resize_embedded_module", { bounds: contentBounds() });
@@ -30,13 +32,13 @@ export function useEmbeddedModules() {
       // reconcile the shell instead of leaving it on a nonexistent module.
       const actual = await invoke<EmbeddedModule | null>("embedded_module_status").catch(() => null);
       setActive(actual);
-      window.alert(`模块切换未完成：${String(error)}`);
+      window.alert(messagesRef.current.embeddedSwitchFailed.replace("{error}", String(error)));
       return false;
     } finally {
       switching.current = false;
       setBusy(false);
     }
-  }, []);
+  }, [messagesRef]);
 
   useEffect(() => {
     const element = document.querySelector(".window-shell > .app-body");

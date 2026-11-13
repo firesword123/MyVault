@@ -220,16 +220,6 @@ button.note-column-status.is-failed {
   cursor: pointer;
 }
 
-.note-row-preview {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-faint);
-  font-size: 11.5px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .note-row-header strong.is-untitled {
   color: var(--text-faint);
   font-weight: 500;

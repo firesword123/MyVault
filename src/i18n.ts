@@ -13,6 +13,15 @@ export function resolveMessages(language: string): LocaleMessages {
   return locales[language as LanguageCode] ?? locales["zh-CN"];
 }
 
+/** Language passed to embedded module pages by the shell (see embedded_modules.rs). */
+export function moduleMessages(): LocaleMessages {
+  try {
+    return resolveMessages(new URLSearchParams(window.location.search).get("lang") ?? "");
+  } catch {
+    return resolveMessages("");
+  }
+}
+
 export function t(messages: LocaleMessages, key: keyof LocaleMessages, vars?: Record<string, string>) {
   const template = messages[key];
 

@@ -23,6 +23,7 @@ pub(crate) struct BootstrapPayload {
     vault_path: String,
     notes: Vec<NoteSummary>,
     folders: Vec<String>,
+    unreadable_notes: Vec<String>,
     settings: AppSettings,
 }
 
@@ -31,6 +32,7 @@ pub(crate) struct BootstrapPayload {
 pub(crate) struct WorkspacePayload {
     notes: Vec<NoteSummary>,
     folders: Vec<String>,
+    unreadable_notes: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -43,7 +45,6 @@ pub(crate) struct NoteSummary {
     is_draft: bool,
     is_trashed: bool,
     updated_at: u64,
-    preview: String,
     search_text: String,
     original_folder_path: Option<String>,
     deleted_at: Option<u64>,
@@ -402,17 +403,6 @@ fn extract_plain_text(content: &str) -> String {
         .replace("&amp;", "&")
 }
 
-fn preview_from_content(content: &str) -> String {
-    extract_plain_text(content)
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("")
-        .chars()
-        .take(120)
-        .collect()
-}
-
 /// Whole-note text used by the notes search, whitespace collapsed.
 fn search_text_from_content(content: &str) -> String {
     extract_plain_text(content).split_whitespace().collect::<Vec<_>>().join(" ")
@@ -437,7 +427,6 @@ fn note_to_summary(
         is_draft: is_draft_folder(&folder_path),
         is_trashed: is_trash_folder(&folder_path),
         updated_at: document.updated_at,
-        preview: preview_from_content(rich_text_html(document)),
         search_text: search_text_from_content(rich_text_html(document)),
         original_folder_path: document.original_folder_path.clone(),
         deleted_at: document.deleted_at,
@@ -471,9 +460,17 @@ fn note_to_detail(
 }
 
 fn collect_notes(app: &AppHandle) -> Result<Vec<NoteSummary>, String> {
+    Ok(scan_notes(app)?.0)
+}
+
+/// Lists notes, skipping files that cannot be read or parsed. Notes are plain
+/// files users may edit or sync externally, so one bad file must not hide the
+/// rest; the skipped paths (relative to the notes root) are reported instead.
+fn scan_notes(app: &AppHandle) -> Result<(Vec<NoteSummary>, Vec<String>), String> {
     let notes = notes_dir(app)?;
-    let mut directories = vec![notes];
+    let mut directories = vec![notes.clone()];
     let mut items = Vec::new();
+    let mut unreadable = Vec::new();
 
     while let Some(current_dir) = directories.pop() {
         let entries = fs::read_dir(&current_dir)
@@ -492,13 +489,21 @@ fn collect_notes(app: &AppHandle) -> Result<Vec<NoteSummary>, String> {
                 continue;
             }
 
-            let document = load_note_document(&path)?;
-            items.push(note_to_summary(app, &path, &document)?);
+            match load_note_document(&path) {
+                Ok(document) => items.push(note_to_summary(app, &path, &document)?),
+                Err(_) => unreadable.push(
+                    path.strip_prefix(&notes)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                ),
+            }
         }
     }
 
     items.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    Ok(items)
+    unreadable.sort();
+    Ok((items, unreadable))
 }
 
 /// Notes use one level of folders. Deeper directories created outside MyVault
@@ -544,9 +549,11 @@ fn collect_folders(app: &AppHandle) -> Result<Vec<String>, String> {
 }
 
 fn workspace_payload(app: &AppHandle) -> Result<WorkspacePayload, String> {
+    let (notes, unreadable_notes) = scan_notes(app)?;
     Ok(WorkspacePayload {
-        notes: collect_notes(app)?,
+        notes,
         folders: collect_folders(app)?,
+        unreadable_notes,
     })
 }
 
@@ -578,7 +585,9 @@ fn folder_contains_notes(app: &AppHandle, folder: &str) -> Result<bool, String> 
 }
 
 fn seed_default_note(app: &AppHandle) -> Result<(), String> {
-    if !collect_notes(app)?.is_empty() {
+    // A vault holding only unreadable notes is not empty; do not seed over it.
+    let (notes, unreadable) = scan_notes(app)?;
+    if !notes.is_empty() || !unreadable.is_empty() {
         return Ok(());
     }
     if !notes_folder_dir(app, INBOX_FOLDER)?.is_dir() {
@@ -608,10 +617,12 @@ pub(crate) fn bootstrap_app(app: AppHandle) -> Result<BootstrapPayload, String> 
     migrate_legacy_drafts(&app)?;
     seed_default_note(&app)?;
 
+    let (notes, unreadable_notes) = scan_notes(&app)?;
     Ok(BootstrapPayload {
         vault_path: data_root_dir(&app)?.display().to_string(),
-        notes: collect_notes(&app)?,
+        notes,
         folders: collect_folders(&app)?,
+        unreadable_notes,
         settings: load_settings(&app)?,
     })
 }
@@ -1036,9 +1047,8 @@ mod tests {
     #[test]
     fn plain_text_keeps_blocks_and_decodes_entities() {
         let html = "<h1>Title</h1><p>a&nbsp;<strong>b</strong> &amp; c</p><div>next<br>line</div>";
-        assert_eq!(preview_from_content(html), "Title");
         assert_eq!(search_text_from_content(html), "Title a b & c next line");
-        assert_eq!(preview_from_content("<p><br></p>"), "");
+        assert_eq!(search_text_from_content("<p><br></p>"), "");
     }
 
     #[test]

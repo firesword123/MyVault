@@ -2,7 +2,11 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { LocaleMessages } from "../i18n";
 import { useEmbeddedGuard } from "../useEmbeddedGuard";
+
+/** Focus/visibility refreshes reconcile the whole library with disk; keep them rare. */
+const ASMR_REFRESH_INTERVAL_MS = 60_000;
 import {
   Check,
   ChevronLeft,
@@ -69,12 +73,16 @@ function FileIcon({ kind }: { kind: AsmrFileItem["kind"] }) {
   return <File size={25} strokeWidth={1.75} />;
 }
 
-function fileKindLabel(file: AsmrFileItem) {
-  if (file.kind === "folder") return "文件夹";
-  if (file.kind === "audio") return file.subtitlePath ? "音频 · 同名字幕已关联" : "音频";
-  if (file.kind === "subtitle") return "字幕";
-  if (file.kind === "image") return "图片";
-  return "文件";
+function fileKindLabel(messages: LocaleMessages, file: AsmrFileItem) {
+  if (file.kind === "folder") return messages.asmrKindFolder;
+  if (file.kind === "audio") return file.subtitlePath ? messages.asmrKindAudioWithSubtitle : messages.asmrKindAudio;
+  if (file.kind === "subtitle") return messages.asmrKindSubtitle;
+  if (file.kind === "image") return messages.asmrKindImage;
+  return messages.asmrKindFile;
+}
+
+function fillTemplate(template: string, values: Record<string, string | number>) {
+  return Object.entries(values).reduce((text, [key, value]) => text.split(`{${key}}`).join(String(value)), template);
 }
 
 function formatBytes(bytes: number) {
@@ -93,7 +101,20 @@ function workCoverHue(rjId: string) {
   return Array.from(rjId).reduce((value, character) => (value * 31 + character.charCodeAt(0)) % 360, 24);
 }
 
-export function AsmrWorkspace() {
+export function AsmrWorkspace({ messages }: { messages: LocaleMessages }) {
+  const sectionNames: Record<AsmrSection, string> = {
+    library: messages.asmrSectionLibrary,
+    circles: messages.asmrSectionCircles,
+    tags: messages.asmrSectionTags,
+    voices: messages.asmrSectionVoices,
+  };
+  const sectionNouns: Record<Exclude<AsmrSection, "library">, string> = {
+    circles: messages.asmrCircleNoun,
+    tags: messages.asmrTagNoun,
+    voices: messages.asmrVoiceNoun,
+  };
+  const filterLabel = (section: Exclude<AsmrSection, "library">, value: string) =>
+    fillTemplate(messages.asmrFilterLabel, { label: sectionNames[section], value });
   const [view, setView] = useState<"library" | "detail">("library");
   const [activeSection, setActiveSection] = useState<AsmrSection>("library");
   const [activeFilter, setActiveFilter] = useState<AsmrFilter | null>(null);
@@ -119,25 +140,19 @@ export function AsmrWorkspace() {
   const [structuredMetadataText, setStructuredMetadataText] = useState("");
   const [structuredMetadataMode, setStructuredMetadataMode] = useState<StructuredMetadataMode>("skip");
   const [structuredMetadataStatus, setStructuredMetadataStatus] = useState("");
-  useEmbeddedGuard(busy ? "DL_ASMR 正在导入，请完成后再切换" : metadataDraft ? "请先保存或取消元数据编辑，再切换模块" : null);
+  useEmbeddedGuard(busy ? messages.asmrImportGuard : metadataDraft ? messages.asmrMetadataGuard : null);
 
   const selectedWork = works.find((work) => work.rjId === selectedWorkId) ?? works[0] ?? null;
   const audioItems = folderItems.filter((item) => item.kind === "audio");
 
-  const sectionLabel = activeSection === "circles" ? "社团" : activeSection === "tags" ? "标签" : activeSection === "voices" ? "声优" : "媒体库";
-  const activeFilterLabel =
-    activeFilter?.kind === "circles"
-      ? `社团：${activeFilter.value}`
-      : activeFilter?.kind === "tags"
-        ? `标签：${activeFilter.value}`
-        : activeFilter?.kind === "voices"
-          ? `声优：${activeFilter.value}`
-          : "";
+  const sectionLabel = sectionNames[activeSection];
+  const sectionNoun = activeSection === "library" ? "" : sectionNouns[activeSection];
+  const activeFilterLabel = activeFilter ? filterLabel(activeFilter.kind, activeFilter.value) : "";
 
   const baseWorks = useMemo(() => {
     if (!activeFilter) return works;
     return works.filter((work) => {
-      if (activeFilter.kind === "circles") return (work.circle || "未指定") === activeFilter.value;
+      if (activeFilter.kind === "circles") return (work.circle || messages.asmrUnspecified) === activeFilter.value;
       if (activeFilter.kind === "tags") return work.tags.includes(activeFilter.value);
       return work.voiceActors.includes(activeFilter.value);
     });
@@ -161,7 +176,7 @@ export function AsmrWorkspace() {
     for (const work of works) {
       const values =
         activeSection === "circles"
-          ? [work.circle || "未指定"]
+          ? [work.circle || messages.asmrUnspecified]
           : activeSection === "tags"
             ? work.tags
             : work.voiceActors;
@@ -260,15 +275,23 @@ export function AsmrWorkspace() {
           sourcePath: selected,
         },
       });
-      const actionLabel = mode === "move" ? "移动导入" : "复制导入";
-      const moveNotice = mode === "move" ? "\n\n移动成功后，原位置中的作品文件夹会被移除。" : "";
-      const overwrite = preview.alreadyExists
-        ? window.confirm(
-            `${preview.rjId} 已存在，是否覆盖并${actionLabel}？\n\n文件 ${preview.fileCount} 个，文件夹 ${preview.folderCount} 个\n音频 ${preview.audioCount} 个，字幕 ${preview.subtitleCount} 个，已关联字幕 ${preview.associatedSubtitleCount} 个\n图片 ${preview.imageCount} 个，其他 ${preview.otherCount} 个\n总大小 ${formatBytes(preview.totalSize)}${moveNotice}`,
-          )
-        : window.confirm(
-            `确认${actionLabel} ${preview.rjId}？\n\n文件 ${preview.fileCount} 个，文件夹 ${preview.folderCount} 个\n音频 ${preview.audioCount} 个，字幕 ${preview.subtitleCount} 个，已关联字幕 ${preview.associatedSubtitleCount} 个\n图片 ${preview.imageCount} 个，其他 ${preview.otherCount} 个\n总大小 ${formatBytes(preview.totalSize)}${moveNotice}`,
-          );
+      const actionLabel = mode === "move" ? messages.asmrMoveImport : messages.asmrCopyImport;
+      const moveNotice = mode === "move" ? `\n\n${messages.asmrMoveNotice}` : "";
+      const stats = fillTemplate(messages.asmrImportStats, {
+        files: preview.fileCount,
+        folders: preview.folderCount,
+        audio: preview.audioCount,
+        subtitles: preview.subtitleCount,
+        linked: preview.associatedSubtitleCount,
+        images: preview.imageCount,
+        other: preview.otherCount,
+        size: formatBytes(preview.totalSize),
+      });
+      const question = fillTemplate(
+        preview.alreadyExists ? messages.asmrConfirmOverwrite : messages.asmrConfirmImport,
+        { rjId: preview.rjId, action: actionLabel },
+      );
+      const overwrite = window.confirm(`${question}\n\n${stats}${moveNotice}`);
       if (!overwrite) return;
       const result = await invoke<AsmrImportResult>("import_asmr_work", {
         input: {
@@ -280,7 +303,7 @@ export function AsmrWorkspace() {
       });
       await bootstrapAsmr();
       openWork(result.work.rjId, result.work.lastOpenedFolder ?? "");
-      if (result.warning) setErrorMessage(result.warning);
+      if (result.warning) setErrorMessage(messages.asmrImportWarning.replace("{detail}", result.warning));
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : String(error));
     } finally {
@@ -346,8 +369,11 @@ export function AsmrWorkspace() {
   }
 
   async function upsertDictionaryValue(section: Exclude<AsmrSection, "library">, oldValue?: string) {
-    const label = section === "circles" ? "社团" : section === "tags" ? "标签" : "声优";
-    const nextValue = window.prompt(oldValue ? `重命名${label}` : `新增${label}`, oldValue ?? "");
+    const label = sectionNouns[section];
+    const nextValue = window.prompt(
+      (oldValue ? messages.asmrRenamePrompt : messages.asmrCreatePrompt).replace("{label}", label),
+      oldValue ?? "",
+    );
     if (nextValue === null) return;
     const value = nextValue.trim();
     if (!value) return;
@@ -370,8 +396,7 @@ export function AsmrWorkspace() {
   }
 
   async function deleteDictionaryValue(section: Exclude<AsmrSection, "library">, value: string) {
-    const label = section === "circles" ? "社团" : section === "tags" ? "标签" : "声优";
-    if (!window.confirm(`删除${label}「${value}」？\n\n该值也会从已关联作品中移除。`)) return;
+    if (!window.confirm(fillTemplate(messages.asmrDeleteConfirm, { label: sectionNouns[section], value }))) return;
     setErrorMessage("");
     try {
       const payload = await invoke<AsmrBootstrapPayload>("delete_asmr_dictionary", {
@@ -432,6 +457,7 @@ export function AsmrWorkspace() {
 
   function renderMetadataValueEditor(
     label: string,
+    noun: string,
     key: MetadataPickerKey,
     selectedValues: string[],
     dictionaryValues: string[],
@@ -453,21 +479,21 @@ export function AsmrWorkspace() {
                   type="button"
                   className={`asmr-selected-chip ${key === "voiceActors" ? "is-voice" : ""}`}
                   onClick={() => removeDraftValue(key, value)}
-                  title={`移除${value}`}
+                  title={messages.asmrRemoveValue.replace("{value}", value)}
                 >
                   <span>{value}</span>
                   <X size={14} strokeWidth={1.9} />
                 </button>
               ))
             ) : (
-              <span className="asmr-selected-empty">未添加</span>
+              <span className="asmr-selected-empty">{messages.asmrNoneAdded}</span>
             )}
             <button
               type="button"
               className="asmr-picker-add-button"
               onClick={() => openMetadataPicker(key)}
-              aria-label={`添加${label}`}
-              title={`添加${label}`}
+              aria-label={messages.asmrAddValue.replace("{label}", noun)}
+              title={messages.asmrAddValue.replace("{label}", noun)}
             >
               <Plus size={17} strokeWidth={2} />
             </button>
@@ -480,7 +506,7 @@ export function AsmrWorkspace() {
                 <input
                   autoFocus
                   type="search"
-                  placeholder={`搜索${label}`}
+                  placeholder={messages.asmrSearchValue.replace("{label}", noun)}
                   value={metadataPickerSearch}
                   onChange={(event) => setMetadataPickerSearch(event.target.value)}
                 />
@@ -502,7 +528,7 @@ export function AsmrWorkspace() {
                     </button>
                   ))
                 ) : (
-                  <span className="asmr-picker-empty">没有可添加项</span>
+                  <span className="asmr-picker-empty">{messages.asmrNothingToAdd}</span>
                 )}
               </div>
             </div>
@@ -536,12 +562,12 @@ export function AsmrWorkspace() {
     try {
       parsed = JSON.parse(structuredMetadataText) as StructuredMetadataInput;
     } catch (error) {
-      setStructuredMetadataStatus(`JSON 解析失败：${error instanceof Error ? error.message : String(error)}`);
+      setStructuredMetadataStatus(messages.asmrJsonParseFailed.replace("{error}", error instanceof Error ? error.message : String(error)));
       return;
     }
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      setStructuredMetadataStatus("JSON 顶层必须是对象。");
+      setStructuredMetadataStatus(messages.asmrJsonNotObject);
       return;
     }
 
@@ -573,7 +599,7 @@ export function AsmrWorkspace() {
           nextDraft.circle = circle;
           if (!knownCircles.has(circle)) created.circles.push(circle);
         } else {
-          skipped.push(`社团：${circle}`);
+          skipped.push(filterLabel("circles", circle));
         }
       }
     }
@@ -586,7 +612,7 @@ export function AsmrWorkspace() {
           created.tags.push(tag);
           return true;
         }
-        skipped.push(`标签：${tag}`);
+        skipped.push(filterLabel("tags", tag));
         return false;
       });
     }
@@ -599,7 +625,7 @@ export function AsmrWorkspace() {
           created.voiceActors.push(voiceActor);
           return true;
         }
-        skipped.push(`声优：${voiceActor}`);
+        skipped.push(filterLabel("voices", voiceActor));
         return false;
       });
     }
@@ -614,10 +640,10 @@ export function AsmrWorkspace() {
     }
 
     const createdCount = created.circles.length + created.tags.length + created.voiceActors.length;
-    const parts = ["已应用到当前表单"];
-    if (createdCount) parts.push(`新增 ${createdCount} 项`);
-    if (skipped.length) parts.push(`跳过 ${skipped.length} 项`);
-    setStructuredMetadataStatus(parts.join("，") + "。");
+    const parts = [messages.asmrAppliedToForm];
+    if (createdCount) parts.push(messages.asmrCreatedCount.replace("{count}", String(createdCount)));
+    if (skipped.length) parts.push(messages.asmrSkippedCount.replace("{count}", String(skipped.length)));
+    setStructuredMetadataStatus(parts.join(messages.asmrListSeparator) + messages.asmrSentenceEnd);
   }
 
   async function saveMetadata() {
@@ -654,9 +680,14 @@ export function AsmrWorkspace() {
     setErrorMessage("");
     const startIndex = audioItems.findIndex((audioItem) => audioItem.relativePath === item.relativePath);
     if (startIndex < 0) return;
+    const resumeMs =
+      selectedWork.lastPlayedAudioPath === item.relativePath && selectedWork.lastPositionMs > 0
+        ? selectedWork.lastPositionMs
+        : 0;
     const request: PlayerQueueRequest = {
       source: "dl_asmr",
       startIndex,
+      startPositionMs: resumeMs || undefined,
       tracks: audioItems.map((audioItem) => ({
         id: `${selectedWork.rjId}:${audioItem.relativePath}`,
         title: audioItem.name,
@@ -672,20 +703,26 @@ export function AsmrWorkspace() {
         input: {
           rjId: selectedWork.rjId,
           audioPath: item.relativePath,
-          positionMs: 0,
+          positionMs: resumeMs,
         },
       });
       setWorks((current) => current.map((work) => (work.rjId === updated.rjId ? updated : work)));
       // Queue handoff may immediately destroy this embedded page.
       await invoke("request_main_playback", { request });
     } catch (error) {
-      setErrorMessage(`无法交给主程序播放：${error instanceof Error ? error.message : String(error)}`);
+      setErrorMessage(messages.asmrHandoffFailed.replace("{error}", error instanceof Error ? error.message : String(error)));
     }
   }
 
   useEffect(() => {
+    // Bootstrap reconciles the whole library with disk, so focus-driven refreshes are throttled.
+    let lastRefresh = Date.now();
     void bootstrapAsmr();
-    const refreshFromDisk = () => void bootstrapAsmr();
+    const refreshFromDisk = () => {
+      if (Date.now() - lastRefresh < ASMR_REFRESH_INTERVAL_MS) return;
+      lastRefresh = Date.now();
+      void bootstrapAsmr();
+    };
     const handleVisibility = () => {
       if (document.visibilityState === "visible") refreshFromDisk();
     };
@@ -706,34 +743,34 @@ export function AsmrWorkspace() {
       <aside className="asmr-sidebar library-sidebar">
         <div className="side-h">
           <div className="side-t1">DL_ASMR</div>
-          <div className="side-t2">DLsite 音声资料库</div>
+          <div className="side-t2">{messages.asmrLibraryTagline}</div>
         </div>
 
         <button type="button" className={`nav-item ${activeSection === "library" ? "active" : ""}`} onClick={() => selectSection("library")}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="18" y2="20" /><line x1="6" y1="4" x2="6" y2="20" /><line x1="12" y1="10" x2="12" y2="20" /></svg>
-          媒体库
+          {messages.asmrSectionLibrary}
         </button>
         <button type="button" className={`nav-item ${activeSection === "circles" ? "active" : ""}`} onClick={() => selectSection("circles")}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /><path d="M9 21v-4h6v4" /></svg>
-          社团
+          {messages.asmrSectionCircles}
         </button>
         <button type="button" className={`nav-item ${activeSection === "tags" ? "active" : ""}`} onClick={() => selectSection("tags")}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z" /><circle cx="7.5" cy="7.5" r="0.8" fill="currentColor" /></svg>
-          标签
+          {messages.asmrSectionTags}
         </button>
         <button type="button" className={`nav-item ${activeSection === "voices" ? "active" : ""}`} onClick={() => selectSection("voices")}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v4a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" /><path d="M19 10v1a7 7 0 0 1-14 0v-1" /><path d="M12 18v3" /></svg>
-          声优
+          {messages.asmrSectionVoices}
         </button>
 
         <div className="side-foot">
           <button type="button" className="btn primary" disabled={busy} onClick={() => void importWork("copy")}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-            {busy ? "导入中..." : "复制导入"}
+            {busy ? messages.asmrImporting : messages.asmrCopyImport}
           </button>
-          <button type="button" className="btn ghost" disabled={busy} onClick={() => void importWork("move")} title="同一磁盘中通常可以快速完成">
+          <button type="button" className="btn ghost" disabled={busy} onClick={() => void importWork("move")} title={messages.asmrMoveImportHint}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
-            {busy ? "导入中..." : "移动导入"}
+            {busy ? messages.asmrImporting : messages.asmrMoveImport}
           </button>
         </div>
       </aside>
@@ -745,13 +782,13 @@ export function AsmrWorkspace() {
               <div className="toolbar">
                 <div className="tb-title">
                   {sectionLabel}
-                  <span>{activeFilterLabel || "RJ 作品"}</span>
+                  <span>{activeFilterLabel || messages.asmrRjWorks}</span>
                 </div>
                 <label className="search">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
                   <input
                     type="search"
-                    placeholder={showingFilterList ? `搜索${sectionLabel}` : "搜索 RJ、标题、社团、标签"}
+                    placeholder={showingFilterList ? messages.asmrSearchValue.replace("{label}", sectionNoun) : messages.asmrSearchWorks}
                     value={searchText}
                     onChange={(event) => {
                       setSearchText(event.target.value);
@@ -760,7 +797,7 @@ export function AsmrWorkspace() {
                   />
                 </label>
                 <label className="perpage">
-                  每页
+                  {messages.asmrPerPage}
                   <select
                     className="select"
                     value={pageSize}
@@ -778,20 +815,20 @@ export function AsmrWorkspace() {
                 <div className="tb-btns">
                   <button type="button" className="btn ghost" disabled={!libraryPath} onClick={() => void openInExplorer(libraryPath)}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
-                    打开资源目录
+                    {messages.asmrOpenLibraryFolder}
                   </button>
                   <button type="button" className="btn ghost" disabled={busy} onClick={() => void bootstrapAsmr()}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3.5-7" /><polyline points="21 3 21 9 15 9" /></svg>
-                    刷新
+                    {messages.refreshButton}
                   </button>
                   {activeFilter ? (
                     <button type="button" className="btn ghost" onClick={() => setActiveFilter(null)}>
-                      返回{sectionLabel}
+                      {messages.asmrBackTo.replace("{label}", sectionLabel)}
                     </button>
                   ) : null}
                   {showingFilterList ? (
                     <button type="button" className="btn primary" onClick={() => void upsertDictionaryValue(activeSection as Exclude<AsmrSection, "library">)}>
-                      新增{sectionLabel}
+                      {messages.asmrCreatePrompt.replace("{label}", sectionNoun)}
                     </button>
                   ) : null}
                 </div>
@@ -820,7 +857,7 @@ export function AsmrWorkspace() {
                               void upsertDictionaryValue(activeSection as Exclude<AsmrSection, "library">, entry.value);
                             }}
                           >
-                            重命名
+                            {messages.asmrRename}
                           </button>
                           <button
                             type="button"
@@ -830,14 +867,14 @@ export function AsmrWorkspace() {
                               void deleteDictionaryValue(activeSection as Exclude<AsmrSection, "library">, entry.value);
                             }}
                           >
-                            删除
+                            {messages.deleteButton}
                           </button>
                         </span>
                       </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="grid-empty">没有匹配的条目</div>
+                    <div className="grid-empty">{messages.asmrNoMatches}</div>
                   )
                 ) : visibleWorks.length ? (
                   <div className="work-grid">
@@ -854,10 +891,10 @@ export function AsmrWorkspace() {
                       </span>
                       <span className="w-info">
                         <span className="w-title">{work.title || work.rjId}</span>
-                        <span className="w-circle">{work.circle || "社团未指定"}</span>
+                        <span className="w-circle">{work.circle || messages.asmrNoCircle}</span>
                         <span className="w-loc">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-                          本地资源
+                          {messages.asmrLocalFiles}
                         </span>
                         <span className="w-tags">
                           {work.tags.slice(0, 4).map((tag) => (
@@ -869,18 +906,18 @@ export function AsmrWorkspace() {
                     ))}
                   </div>
                 ) : (
-                  <div className="grid-empty">没有匹配的条目</div>
+                  <div className="grid-empty">{messages.asmrNoMatches}</div>
                 )}
               </div>
 
               <div className="pager">
                 <button type="button" className="pg-btn" disabled={page === 1} onClick={() => setPage((current) => current - 1)}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6" /></svg>
-                  上一页
+                  {messages.previousPage}
                 </button>
                 <span className="pg-info">{page} / {pageCount}</span>
                 <button type="button" className="pg-btn" disabled={page === pageCount} onClick={() => setPage((current) => current + 1)}>
-                  下一页
+                  {messages.nextPage}
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6" /></svg>
                 </button>
               </div>
@@ -890,7 +927,7 @@ export function AsmrWorkspace() {
               <div className="asmr-detail-header">
                 <button type="button" className="soft-button" onClick={() => setView("library")}>
                   <ChevronLeft size={17} strokeWidth={1.8} />
-                  <span>返回媒体库</span>
+                  <span>{messages.asmrBackToLibrary}</span>
                 </button>
               </div>
 
@@ -904,8 +941,8 @@ export function AsmrWorkspace() {
                       <span className="section-label">{selectedWork.rjId}</span>
                       <h2 title={selectedWork.title || selectedWork.rjId}>{selectedWork.title || selectedWork.rjId}</h2>
                       <div className="asmr-work-meta">
-                        <span>{selectedWork.circle || "社团未指定"}</span>
-                        <span>{selectedWork.coverPath ? "已设置作品内封面" : "尚未设置封面"}</span>
+                        <span>{selectedWork.circle || messages.asmrNoCircle}</span>
+                        <span>{selectedWork.coverPath ? messages.asmrCoverSet : messages.asmrCoverUnset}</span>
                       </div>
                       <div className="asmr-chip-row">
                         {selectedWork.tags.map((tag) => (
@@ -923,10 +960,10 @@ export function AsmrWorkspace() {
                     <div className="asmr-work-actions">
                       <button type="button" className="soft-button" onClick={() => void openInExplorer(selectedWork.workDir)}>
                         <FolderOpen size={16} strokeWidth={1.8} />
-                        在资源管理器中打开
+                        {messages.asmrOpenInExplorer}
                       </button>
                       <button type="button" className="soft-button" onClick={() => startMetadataEdit(selectedWork)}>
-                        编辑信息
+                        {messages.asmrEditInfo}
                       </button>
                     </div>
                   </section>
@@ -945,14 +982,14 @@ export function AsmrWorkspace() {
                         ) : null}
                       </div>
                       <div className="asmr-file-toolbar-actions">
-                        {selectedCoverPath ? <span title={selectedCoverPath}>已选择图片</span> : <span>先选择一张图片</span>}
+                        {selectedCoverPath ? <span title={selectedCoverPath}>{messages.asmrImageSelected}</span> : <span>{messages.asmrSelectImageFirst}</span>}
                         <button
                           type="button"
                           className="soft-button"
                           disabled={busy || !selectedCoverPath}
                           onClick={() => void setCover(selectedWork, selectedCoverPath)}
                         >
-                          设置封面
+                          {messages.asmrSetCover}
                         </button>
                       </div>
                     </div>
@@ -971,7 +1008,7 @@ export function AsmrWorkspace() {
                           </span>
                           <span className="asmr-file-copy">
                             <strong>..</strong>
-                            <small>返回上级目录</small>
+                            <small>{messages.asmrParentFolder}</small>
                           </span>
                         </button>
                       ) : null}
@@ -996,7 +1033,7 @@ export function AsmrWorkspace() {
                           </span>
                           <span className="asmr-file-copy">
                             <strong title={file.name}>{file.name}</strong>
-                            <small>{fileKindLabel(file)}</small>
+                            <small>{fileKindLabel(messages, file)}</small>
                           </span>
                           {file.kind === "audio" ? <Play size={18} strokeWidth={1.85} /> : null}
                           {file.kind === "image" && selectedCoverPath === file.relativePath ? <Check size={18} strokeWidth={2} /> : null}
@@ -1014,10 +1051,10 @@ export function AsmrWorkspace() {
           <div className="inline-modal-backdrop">
             <section className="asmr-metadata-modal">
               <div className="inline-modal-header">
-                <h3>编辑作品信息</h3>
+                <h3>{messages.asmrEditWorkTitle}</h3>
               </div>
               <label className="settings-field">
-                <span>标题</span>
+                <span>{messages.asmrFieldTitle}</span>
                 <input
                   type="text"
                   value={metadataDraft.title}
@@ -1025,12 +1062,12 @@ export function AsmrWorkspace() {
                 />
               </label>
               <label className="settings-field">
-                <span>社团</span>
+                <span>{messages.asmrFieldCircle}</span>
                 <select
                   value={metadataDraft.circle}
                   onChange={(event) => setMetadataDraft((current) => current && { ...current, circle: event.target.value })}
                 >
-                  <option value="">未指定</option>
+                  <option value="">{messages.asmrUnspecified}</option>
                   {dictionaries.circles.map((circle) => (
                     <option key={circle} value={circle}>
                       {circle}
@@ -1038,10 +1075,10 @@ export function AsmrWorkspace() {
                   ))}
                 </select>
               </label>
-              {renderMetadataValueEditor("标签", "tags", metadataDraft.tags, dictionaries.tags)}
-              {renderMetadataValueEditor("声优", "voiceActors", metadataDraft.voiceActors, dictionaries.voiceActors)}
+              {renderMetadataValueEditor(messages.asmrSectionTags, messages.asmrTagNoun, "tags", metadataDraft.tags, dictionaries.tags)}
+              {renderMetadataValueEditor(messages.asmrSectionVoices, messages.asmrVoiceNoun, "voiceActors", metadataDraft.voiceActors, dictionaries.voiceActors)}
               <label className="settings-field">
-                <span>备注</span>
+                <span>{messages.asmrFieldNote}</span>
                 <textarea
                   value={metadataDraft.note}
                   onChange={(event) => setMetadataDraft((current) => current && { ...current, note: event.target.value })}
@@ -1055,8 +1092,8 @@ export function AsmrWorkspace() {
                       value={structuredMetadataMode}
                       onChange={(event) => setStructuredMetadataMode(event.target.value as StructuredMetadataMode)}
                     >
-                      <option value="skip">不存在自动跳过</option>
-                      <option value="create">不存在自动新建</option>
+                      <option value="skip">{messages.asmrMissingSkip}</option>
+                      <option value="create">{messages.asmrMissingCreate}</option>
                     </select>
                   </label>
                 </div>
@@ -1066,12 +1103,12 @@ export function AsmrWorkspace() {
                     setStructuredMetadataText(event.target.value);
                     setStructuredMetadataStatus("");
                   }}
-                  placeholder={`{\n  "title": "作品标题",\n  "circle": "社团名",\n  "tags": ["标签A", "标签B"],\n  "voiceActors": ["声优A", "声优B"],\n  "note": "备注"\n}`}
+                  placeholder={messages.asmrJsonPlaceholder}
                   spellCheck={false}
                 />
                 <div className="asmr-structured-import-footer">
                   <button type="button" className="soft-button" onClick={applyStructuredMetadata}>
-                    应用到表单
+                    {messages.asmrApplyToForm}
                   </button>
                   {structuredMetadataStatus ? <span>{structuredMetadataStatus}</span> : null}
                 </div>
@@ -1088,10 +1125,10 @@ export function AsmrWorkspace() {
                     setStructuredMetadataStatus("");
                   }}
                 >
-                  取消
+                  {messages.cancelButton}
                 </button>
                 <button type="button" className="soft-button" onClick={() => void saveMetadata()}>
-                  保存
+                  {messages.saveButton}
                 </button>
               </div>
             </section>
